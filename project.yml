@@ -89,7 +89,7 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Satyajit Amme. All rights reserved."
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         # Regular Dock app: clicking the Dock icon opens the Dashboard. The menu
-        # bar extra is kept as a secondary entry point, and ⌃⌘M still summons
+        # bar extra is kept as a secondary entry point, and ⌃⌥Space still summons
         # the spotlight panel from anywhere.
         GENERATE_INFOPLIST_FILE: YES
         ENABLE_HARDENED_RUNTIME: YES

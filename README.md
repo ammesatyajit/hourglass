@@ -29,7 +29,7 @@
 ## What it does
 
 - **Sub-second search** across every message you've ever sent or received — operators like `with:Henry`, `last:7d`, `type:image`, regex, AND, OR
-- **Spotlight-style hotkey panel** — `⌃⌘M` from anywhere
+- **Spotlight-style hotkey panel** — `⌃⌥Space` from anywhere (rebindable in Settings)
 - **Dashboard analytics** — top contacts, sent/received over time, top group chats, brushable timeline
 - **Optional natural-language search** — local Qwen 2.5 via MLX, fully offline after a one-time model download
 - **Signed, notarized, sandbox-friendly** — clean Gatekeeper install, Full Disk Access is the only permission
