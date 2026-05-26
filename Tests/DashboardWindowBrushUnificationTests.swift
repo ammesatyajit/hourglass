@@ -70,7 +70,12 @@ final class DashboardWindowBrushUnificationTests: XCTestCase {
         // `Date()` evaluated inside _setAggregateForTests.)
         if let brush = vm.brushedRange {
             let days = abs(brush.upperBound.timeIntervalSince(brush.lowerBound) / 86_400)
-            XCTAssertEqual(days, 30, accuracy: 1.5,
+            // ±2.5 days of tolerance: clamping to the aggregate's
+            // day-resolved span shaves up to a day off either end
+            // (startOfDay arithmetic), and a DST transition inside the
+            // 30-day window shifts wall-time by an hour. The contract
+            // is "~30 days," not exactly 720.0 hours, so this is fine.
+            XCTAssertEqual(days, 30, accuracy: 2.5,
                            "Brushed range after snap should span ~30 days for the .last30Days preset.")
         }
     }
@@ -84,10 +89,11 @@ final class DashboardWindowBrushUnificationTests: XCTestCase {
         let vm = DashboardViewModel()
         vm._setAggregateForTests(makeAggregate())
 
-        // 30d preset → brush ~30 days
+        // 30d preset → brush ~30 days. Same ±2.5d tolerance reasoning
+        // as testAggregateLandingSnapsBrushToPreset above.
         if let r30 = vm.brushedRange {
             let days30 = r30.upperBound.timeIntervalSince(r30.lowerBound) / 86_400
-            XCTAssertEqual(days30, 30, accuracy: 1.5, "Initial 30d preset span.")
+            XCTAssertEqual(days30, 30, accuracy: 2.5, "Initial 30d preset span.")
         } else {
             XCTFail("Brush should be set after aggregate landing.")
         }
@@ -219,10 +225,20 @@ final class DashboardWindowBrushUnificationTests: XCTestCase {
         let days = brush.upperBound.timeIntervalSince(brush.lowerBound) / 86_400
         XCTAssertEqual(days, 365, accuracy: 3,
                        "12m click should produce a ~365-day brush.")
-        // upperBound should anchor at ~now (within a day — the
-        // aggregate's upper edge is `startOfDay(today)` which can be
-        // up to 24 hours before `Date()`).
-        XCTAssertLessThan(abs(brush.upperBound.timeIntervalSinceNow), 86_400 + 60,
-                          "12m brush's upper bound should anchor at ~now (within a day).")
+        // upperBound should anchor at ~now (within ~2 days). The actual
+        // bound is `startOfDay(today)` from the aggregate, which is
+        // 0–24h before `Date()` in the common case. The extra day of
+        // tolerance covers two narrow edges:
+        //   1. `makeAggregate()` and `vm.window = .last12Months` each
+        //      call `Date()` independently — if the test straddles
+        //      local midnight (<1 ms window), they can resolve to
+        //      different calendar days.
+        //   2. DST spring-forward shaves an hour off "1 day" wall time.
+        // The contract this test pins is "brush is anchored to RECENT
+        // (a year-ish range up to now), not the months-ago dragged
+        // range" — a 48h slop is well below the smallest distinction
+        // that would matter (the dragged brush is ~300 days back).
+        XCTAssertLessThan(abs(brush.upperBound.timeIntervalSinceNow), 2 * 86_400,
+                          "12m brush's upper bound should anchor at ~now (within ~2 days).")
     }
 }
