@@ -11,13 +11,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-ROOT_DIR="$(pwd)"
-PACKAGE_CACHE_PATH="${PACKAGE_CACHE_PATH:-$ROOT_DIR/build/PackageCache}"
-CLONED_PACKAGES_PATH="${CLONED_PACKAGES_PATH:-$ROOT_DIR/build/SourcePackages}"
-XCODEBUILD_HOME="${XCODEBUILD_HOME:-$ROOT_DIR/build/Home}"
-
-mkdir -p "$PACKAGE_CACHE_PATH" "$CLONED_PACKAGES_PATH" "$XCODEBUILD_HOME"
-
 if [ -z "${DEVELOPER_ID:-}" ]; then
     echo "error: DEVELOPER_ID not set" >&2
     exit 1
@@ -30,19 +23,26 @@ fi
 # Build Release.
 ./scripts/generate.sh
 
-HOME="$XCODEBUILD_HOME" CFFIXED_USER_HOME="$XCODEBUILD_HOME" xcodebuild \
+xcodebuild \
     -project Hourglass.xcodeproj \
     -scheme Hourglass \
     -configuration Release \
     -destination "platform=macOS" \
     -derivedDataPath build \
-    -clonedSourcePackagesDirPath "$CLONED_PACKAGES_PATH" \
-    -packageCachePath "$PACKAGE_CACHE_PATH" \
     -skipMacroValidation \
     CODE_SIGN_IDENTITY="$DEVELOPER_ID" \
     CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
     build
+
+# CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO above tells Xcode to use ONLY the
+# entitlements declared in Resources/Hourglass.entitlements — without it,
+# Xcode auto-injects com.apple.security.get-task-allow=true (the
+# "let-a-debugger-attach" entitlement, fine for Debug, forbidden by
+# notarization). Apple's notary service rejects builds carrying this
+# entitlement with status=Invalid, message "The executable requests the
+# com.apple.security.get-task-allow entitlement."
 
 APP_PATH="build/Build/Products/Release/Hourglass.app"
 DMG_PATH="build/Hourglass.dmg"
