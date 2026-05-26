@@ -1,0 +1,41 @@
+# Xcode
+*.xcodeproj/
+!*.xcodeproj/project.pbxproj
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdatad/
+*.moved-aside
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Build artifacts
+*.dmg
+*.app.zip
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Secrets
+*.p12
+*.cer
+*.mobileprovision
+AuthKey_*.p8
+.env
+.env.local
+
+# Editor
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        App Sandbox is DISABLED.
+
+        Hourglass reads ~/Library/Messages/chat.db, which lives outside any
+        sandbox container. macOS gates access via TCC (Full Disk Access), which
+        the user grants in System Settings → Privacy & Security → Full Disk Access.
+
+        If we ever enable the sandbox, we'd need a security-scoped bookmark to
+        chat.db, which the user would have to re-pick on every macOS update.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!--
+        Network client entitlement: enabled ONLY so the first-run NL-search
+        model download can reach Hugging Face. The model (~1 GB
+        Qwen 2.5-1.5B-Instruct-4bit MLX format) is fetched once and cached
+        under the standard Hugging Face cache path; after download, the NL
+        agent runs entirely offline against local Metal kernels (verified by
+        disconnecting the network and confirming inference still works).
+
+        Today this is mostly future-proofing: with App Sandbox off above,
+        macOS doesn't enforce this entitlement on Debug builds. But:
+          - We want this scoped so when we eventually ship a signed +
+            sandboxed Release build (Distribution → Mac App Store, or even
+            DMG with a tighter hardened-runtime profile), the download path
+            still works without any further entitlement plumbing.
+          - It documents intent to future code reviewers: "yes we make
+            exactly one outbound HTTP, and it's for the model download".
+
+        No `com.apple.security.network.server` — we never listen.
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>
