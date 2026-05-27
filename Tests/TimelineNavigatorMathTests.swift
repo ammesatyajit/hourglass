@@ -284,6 +284,93 @@ final class TimelineNavigatorMathTests: XCTestCase {
         XCTAssertEqual(result.newRange.upperBound, start)
     }
 
+    /// Regression: after a swap, the view rebases its `startRange` to
+    /// the post-swap range and continues dragging the new active handle.
+    /// This test simulates that two-tick sequence and verifies that the
+    /// second tick produces the expected post-swap behavior.
+    ///
+    /// Bug it pins (2026-05-26): pre-fix, the view's `dragContext.startRange`
+    /// stayed at the pre-swap value, so a left handle dragged from day 50
+    /// past day 100 and on to day 150 produced [50, 150] on tick 2 instead
+    /// of the correct [100, 150] — the window expanded back to include the
+    /// original lower bound rather than staying on the swapped track.
+    func testDragContinuesCorrectlyAfterSwap_leftToRight() {
+        let m = math()
+        let start = oneYear.lowerBound.addingTimeInterval(50 * 86_400)
+        let end = oneYear.lowerBound.addingTimeInterval(100 * 86_400)
+        // Tick 1: LEFT handle dragged past RIGHT to day 120 → swap.
+        let firstTarget = oneYear.lowerBound.addingTimeInterval(120 * 86_400)
+        let firstResult = m.applyHandleDrag(
+            target: .leftHandle,
+            startRange: start...end,
+            toDate: firstTarget,
+            fullRange: oneYear,
+            minWindowDays: 7
+        )
+        XCTAssertTrue(firstResult.swapped)
+        XCTAssertEqual(firstResult.activeTarget, .rightHandle)
+        XCTAssertEqual(firstResult.newRange.lowerBound, end)
+        XCTAssertEqual(firstResult.newRange.upperBound, firstTarget)
+
+        // Tick 2: continue dragging right to day 150. The view rebases
+        // startRange to firstResult.newRange = [100, 120] and target to
+        // .rightHandle. We expect [100, 150], NOT [50, 150].
+        let secondTarget = oneYear.lowerBound.addingTimeInterval(150 * 86_400)
+        let secondResult = m.applyHandleDrag(
+            target: firstResult.activeTarget,
+            startRange: firstResult.newRange,
+            toDate: secondTarget,
+            fullRange: oneYear,
+            minWindowDays: 7
+        )
+        XCTAssertFalse(secondResult.swapped)
+        XCTAssertEqual(secondResult.activeTarget, .rightHandle)
+        XCTAssertEqual(
+            secondResult.newRange.lowerBound, end,
+            "Lower bound should stay at the post-swap left edge (day 100), NOT revert to the pre-swap left edge (day 50)."
+        )
+        XCTAssertEqual(secondResult.newRange.upperBound, secondTarget)
+    }
+
+    /// Mirror of the left→right swap regression, but for a right handle
+    /// dragged past the left edge and then continued further left.
+    func testDragContinuesCorrectlyAfterSwap_rightToLeft() {
+        let m = math()
+        let start = oneYear.lowerBound.addingTimeInterval(100 * 86_400)
+        let end = oneYear.lowerBound.addingTimeInterval(150 * 86_400)
+        // Tick 1: RIGHT handle dragged past LEFT to day 80 → swap.
+        let firstTarget = oneYear.lowerBound.addingTimeInterval(80 * 86_400)
+        let firstResult = m.applyHandleDrag(
+            target: .rightHandle,
+            startRange: start...end,
+            toDate: firstTarget,
+            fullRange: oneYear,
+            minWindowDays: 7
+        )
+        XCTAssertTrue(firstResult.swapped)
+        XCTAssertEqual(firstResult.activeTarget, .leftHandle)
+        XCTAssertEqual(firstResult.newRange.lowerBound, firstTarget)
+        XCTAssertEqual(firstResult.newRange.upperBound, start)
+
+        // Tick 2: continue dragging left to day 60. Expect [60, 100], NOT
+        // [60, 150].
+        let secondTarget = oneYear.lowerBound.addingTimeInterval(60 * 86_400)
+        let secondResult = m.applyHandleDrag(
+            target: firstResult.activeTarget,
+            startRange: firstResult.newRange,
+            toDate: secondTarget,
+            fullRange: oneYear,
+            minWindowDays: 7
+        )
+        XCTAssertFalse(secondResult.swapped)
+        XCTAssertEqual(secondResult.activeTarget, .leftHandle)
+        XCTAssertEqual(secondResult.newRange.lowerBound, secondTarget)
+        XCTAssertEqual(
+            secondResult.newRange.upperBound, start,
+            "Upper bound should stay at the post-swap right edge (day 100), NOT revert to the pre-swap right edge (day 150)."
+        )
+    }
+
     /// When swapping but the resulting window is below minWindow, the
     /// dragged edge should extend past the cursor to maintain at least
     /// minWindow days.

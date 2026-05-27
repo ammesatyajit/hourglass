@@ -507,9 +507,19 @@ struct TimelineNavigator: View {
                 writeBrushedRange(result.newRange)
                 // If the drag crossed past the opposite edge, the
                 // dragged edge has effectively swapped — keep tracking
-                // the same FINGER motion but with a new identity.
+                // the same FINGER motion but with a new identity, AND
+                // rebase startRange to the post-swap range. Without
+                // the rebase, the next tick's `applyHandleDrag` would
+                // still use the original pre-swap range as its
+                // baseline, producing wrong results once the user
+                // continues dragging past the swap point (e.g. a left
+                // handle dragged from day 50 past day 100 and on to
+                // day 150 would erroneously expand to [50, 150]
+                // instead of staying on the swapped track at
+                // [100, 150]).
                 if result.swapped {
                     dragContext?.target = result.activeTarget
+                    dragContext?.startRange = result.newRange
                 }
             }
             .onEnded { _ in
@@ -557,17 +567,19 @@ struct TimelineNavigator: View {
     }
 
     private func brushSummary(_ range: ClosedRange<Date>) -> String {
+        // Always show the year on BOTH bounds. The previous "year only when
+        // it changes" rule turned `Dec 28, 2025 → May 26, 2026` into
+        // `Dec 28 → May 26, 2026`, which leaves the lower bound ambiguous
+        // (Dec 28 of what year?). Especially confusing on multi-year ranges
+        // and ranges that LOOK same-year but actually crossed a boundary
+        // years ago (e.g. a brush ending Jan 2 starting Dec 30 previous
+        // year would still drop the year). Matches `fullRangeLabel` and
+        // the dashboard's `spanLabel` (which uses `dateStyle = .medium`).
         let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        let yf = DateFormatter()
-        yf.dateFormat = "MMM d, yyyy"
+        f.dateFormat = "MMM d, yyyy"
         let cal = calendar
-        let sameYear = cal.component(.year, from: range.lowerBound)
-            == cal.component(.year, from: range.upperBound)
         let lo = f.string(from: range.lowerBound)
-        let hi = sameYear
-            ? f.string(from: range.upperBound)
-            : yf.string(from: range.upperBound)
+        let hi = f.string(from: range.upperBound)
         let days = max(
             1,
             cal.dateComponents([.day], from: range.lowerBound, to: range.upperBound).day ?? 0
@@ -625,7 +637,9 @@ struct TimelineNavigator: View {
 
     private struct DragContext {
         var target: NavigatorDragTarget
-        let startRange: ClosedRange<Date>
+        /// Mutable so we can rebase after a handle swap — see
+        /// `handleDragGesture`'s post-swap update.
+        var startRange: ClosedRange<Date>
         let startPointerX: CGFloat
     }
 }
