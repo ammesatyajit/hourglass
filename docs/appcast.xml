@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparkle appcast for Hourglass.
+
+  Served at: https://ammesatyajit.github.io/hourglass/appcast.xml
+  (GitHub Pages, configured to deploy from the /docs folder of main.)
+
+  DMG assets live as GitHub Releases attachments:
+    https://github.com/ammesatyajit/hourglass/releases/download/v<MARKETING>/Hourglass-<MARKETING>.dmg
+
+  How to publish a new release:
+    1. Bump MARKETING_VERSION and CURRENT_PROJECT_VERSION in project.yml.
+    2. `./scripts/generate.sh && ./scripts/build.sh && ./scripts/test.sh`.
+    3. `DEVELOPER_ID=… NOTARY_PROFILE=… ./scripts/package.sh` — produces a
+       signed + notarized DMG plus a ready-to-paste <item> block.
+    4. `gh release create vX.Y.Z dist/Hourglass-X.Y.Z.dmg --title "vX.Y.Z" --notes "…"`
+    5. Paste the <item> block emitted by package.sh into <channel> below
+       (newest entry first — Sparkle ranks by version, but newest-first
+       keeps the file readable).
+    6. `git commit docs/appcast.xml && git push` — Pages auto-deploys in
+       ~30s and Sparkle clients see the update on the next poll.
+
+  Until step 5 happens for the first time the <channel> is intentionally
+  empty: Sparkle treats "no <item>" as "no updates available," which is
+  correct — we haven't shipped anything yet.
+-->
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Hourglass</title>
+        <link>https://ammesatyajit.github.io/hourglass/appcast.xml</link>
+        <description>Hourglass updates feed.</description>
+        <language>en</language>
+    </channel>
+</rss>

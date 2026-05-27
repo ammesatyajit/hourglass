@@ -34,6 +34,13 @@ Package.resolved
 AuthKey_*.p8
 .env
 .env.local
+# Sparkle private keys — sign_update reads from the macOS Keychain by
+# default; if a developer keeps a file copy for CI, it must NEVER land in
+# the repo. The recommended on-disk path is `~/.config/hourglass/sparkle.key`
+# (outside the repo entirely), but this glob catches any accidental drop.
+sparkle.key
+sparkle_eddsa_priv*
+*.sparkle.key
 
 # Editor
 .vscode/

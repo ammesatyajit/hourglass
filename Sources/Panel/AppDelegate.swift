@@ -1,5 +1,6 @@
 import AppKit
 import KeyboardShortcuts
+import Sparkle
 import os
 
 /// Same logger surface used by SearchViewModel. Filter in Console.app:
@@ -30,6 +31,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// show; a per-view store would lose its in-memory cache between
     /// toggles even though UserDefaults would persist).
     let recentSearches = RecentSearchesStore()
+
+    /// Sparkle updater. Owns the `SPUUpdater` lifecycle and the standard
+    /// user-driver (alert + progress UI).
+    ///
+    /// `startingUpdater: true` kicks off the background scheduler immediately
+    /// — Sparkle then honors `SUEnableAutomaticChecks` / `SUScheduledCheckInterval`
+    /// from Info.plist. With no delegates wired up we get the default
+    /// behavior: respect the feed URL + public key declared in Info.plist,
+    /// show the standard "An update is available" panel on the user's
+    /// schedule, install on quit.
+    ///
+    /// The menu-bar "Check for Updates…" item routes here via
+    /// `updaterController.checkForUpdates(_:)` — see
+    /// `Sources/HourglassApp.swift::MenuBarContent`.
+    ///
+    /// PRE-RELEASE NOTE: the Info.plist `SUFeedURL` and `SUPublicEDKey` are
+    /// placeholders today. The updater will quietly fail its first check
+    /// against the placeholder host (`updates.example.com`); that's expected
+    /// until we publish the real appcast. See plans.md 2026-05-26
+    /// build-agent entry for the fill-in checklist.
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+
     private(set) lazy var panelController = PanelController(
         viewModel: viewModel,
         recentSearches: recentSearches,

@@ -50,12 +50,74 @@ packages:
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers.git
     from: "1.3.3"
+  # Sparkle 2.x — in-process app updates. Ships as a binary xcframework via
+  # SPM; the `sign_update` / `generate_keys` CLIs live inside the resolved
+  # artifact under `SourcePackages/artifacts/sparkle/Sparkle/bin/` (look
+  # there from scripts/package.sh). The framework itself is what we link;
+  # the appcast is a static XML file we host separately (see plans.md
+  # 2026-05-26 build-agent entry for the placeholder URL + key + how to
+  # fill them in).
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    from: "2.9.2"
 
 targets:
   Hourglass:
     type: application
     platform: macOS
     deploymentTarget: "15.0"
+    # XcodeGen-managed Info.plist. We need this (rather than the cheaper
+    # GENERATE_INFOPLIST_FILE auto-plist) because Sparkle's `SU*` keys
+    # aren't in Xcode's `INFOPLIST_KEY_*` curated mapping — they get
+    # silently dropped. With `info:`, XcodeGen writes a real file we fully
+    # control.
+    #
+    # The path is `Resources/Hourglass.Info.plist`. It's tracked in git so
+    # CI builds don't need XcodeGen. Re-run `./scripts/generate.sh` after
+    # changing any property below and the file will be rewritten.
+    info:
+      path: Resources/Hourglass.Info.plist
+      properties:
+        # ----- Standard bundle metadata (mirrors what GENERATE_INFOPLIST_FILE
+        # used to synthesize). The CF/LS values are constants; the
+        # version/build numbers reference build-setting macros so a single
+        # bump in `settings.base.MARKETING_VERSION` flows through. -----
+        CFBundleDevelopmentRegion: en
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIconFile: AppIcon
+        CFBundleIconName: AppIcon
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: Hourglass
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.utilities
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSHumanReadableCopyright: "Copyright © 2026 Satyajit Amme. All rights reserved."
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        # ----- Sparkle (in-process app updates) ---------------------------
+        # PLACEHOLDERS — replace before first public release. See plans.md
+        # 2026-05-26 build-agent entry for the full fill-in checklist.
+        #   SUFeedURL: the static appcast XML the updater polls. Must be
+        #     HTTPS (Sparkle 2 rejects plain http). We don't host it yet.
+        #   SUPublicEDKey: base64 EdDSA public key, output by
+        #     `bin/generate_keys`. Pair the corresponding PRIVATE key with
+        #     `scripts/package.sh` via `SPARKLE_PRIVATE_KEY=…` env var.
+        #     NEVER COMMIT THE PRIVATE KEY.
+        #   SUEnableAutomaticChecks: true means Sparkle may check on its own
+        #     once the user has opted in (first run shows a permission
+        #     dialog). Set to false to require explicit menu-driven checks.
+        #   SUEnableInstallerLauncherService: only relevant when the app is
+        #     sandboxed (it gates the XPC launcher). Hourglass is
+        #     unsandboxed (chat.db needs FDA — see Hourglass.entitlements),
+        #     so this is false. Left declared for clarity + future-proofing.
+        SUFeedURL: "https://ammesatyajit.github.io/hourglass/appcast.xml"
+        SUPublicEDKey: "B++G1ipP8FLfOtD8wC92uXMrZx+L9j5EHPGp5upUxD8="
+        SUEnableAutomaticChecks: true
+        SUEnableInstallerLauncherService: false
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
@@ -75,6 +137,14 @@ targets:
         product: HuggingFace
       - package: SwiftTransformers
         product: Tokenizers
+      # In-process update checker. The framework is binary (xcframework via
+      # SPM); the menu-bar "Check for Updates…" item is wired in
+      # `Sources/HourglassApp.swift::MenuBarContent` and the
+      # `SPUStandardUpdaterController` is constructed in
+      # `Sources/Panel/AppDelegate.swift`. See plans.md 2026-05-26 for the
+      # placeholder appcast URL + public EdDSA key + sign_update flow.
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         # Bundle id is `com.satyajit.hourglass` — the project's canonical
@@ -84,14 +154,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.satyajit.hourglass
         PRODUCT_NAME: Hourglass
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_CFBundleDisplayName: Hourglass
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
-        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Satyajit Amme. All rights reserved."
-        INFOPLIST_KEY_NSPrincipalClass: NSApplication
-        # Regular Dock app: clicking the Dock icon opens the Dashboard. The menu
-        # bar extra is kept as a secondary entry point, and ⌃⌥Space still summons
-        # the spotlight panel from anywhere.
-        GENERATE_INFOPLIST_FILE: YES
+        # We OWN the Info.plist via XcodeGen's `info:` block below (so we
+        # can declare Sparkle's `SU*` keys, which Xcode's INFOPLIST_KEY_*
+        # auto-merger refuses to forward — it only knows Apple-curated
+        # keys). `info.path` points to a generated file under Resources/.
+        # Don't toggle GENERATE_INFOPLIST_FILE back on without removing
+        # `info:` — Xcode would error on the duplicate Info.plist source.
         ENABLE_HARDENED_RUNTIME: YES
         # Ad-hoc inside Xcode so the build itself never blocks on
         # provisioning profiles. A POST-BUILD step in scripts/build.sh

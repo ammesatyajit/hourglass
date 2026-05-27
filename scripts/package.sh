@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
-# Package Hourglass.app into a signed, notarized DMG.
+# Package Hourglass.app into a signed, notarized DMG. After notarization,
+# also produce a Sparkle EdDSA signature for the DMG and print the
+# `<item>` block to paste into the appcast feed.
 #
 # Required env (set in your shell, NEVER commit):
 #   DEVELOPER_ID         e.g. "Developer ID Application: Your Name (TEAMID)"
 #   NOTARY_PROFILE       keychain profile name from `xcrun notarytool store-credentials`
 #
+# Optional env:
+#   SPARKLE_PRIVATE_KEY  path to a file containing the base64 EdDSA private
+#                        key (output of `bin/generate_keys -p`). If unset,
+#                        sign_update reads from the macOS Keychain
+#                        (`generate_keys` defaults to storing the key
+#                        there under the name "Private key for signing
+#                        Sparkle updates"). NEVER COMMIT THIS FILE — keep
+#                        it on the developer machine outside any tracked
+#                        directory (e.g. `~/.config/hourglass/sparkle.key`,
+#                        mode 0600).
+#   SPARKLE_DOWNLOAD_URL the https URL where this DMG will be hosted (used
+#                        in the printed <item> block). Defaults to the
+#                        GitHub Releases download URL for the matching
+#                        tag — `gh release create vX.Y.Z dist/<DMG>` is the
+#                        expected publish step. Override only if you're
+#                        hosting DMGs elsewhere.
+#
 # Usage:
 #   DEVELOPER_ID="..." NOTARY_PROFILE="..." ./scripts/package.sh
+#   DEVELOPER_ID="..." NOTARY_PROFILE="..." SPARKLE_PRIVATE_KEY=~/.config/hourglass/sparkle.key ./scripts/package.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -74,3 +94,83 @@ xcrun stapler staple "$DMG_PATH"
 
 echo ""
 echo "✓ Signed + notarized: $DMG_PATH"
+
+# ---------------------------------------------------------------------------
+# Sparkle EdDSA signature for the DMG.
+#
+# The signature is what the running app's Sparkle copy verifies before
+# installing an update — it pairs with the SUPublicEDKey we shipped in
+# Info.plist. Without it, the appcast `<item>` block is meaningless and
+# the updater will refuse the download.
+#
+# We locate `sign_update` inside the SPM-resolved Sparkle xcframework. The
+# binary travels with the package; we don't need a separate brew install.
+# ---------------------------------------------------------------------------
+SIGN_UPDATE=""
+for candidate in \
+    "build/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update" \
+    "build/SourcePackages/artifacts/Sparkle/Sparkle/bin/sign_update" \
+    "$(xcrun --find sign_update 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        SIGN_UPDATE="$candidate"
+        break
+    fi
+done
+
+if [ -z "$SIGN_UPDATE" ]; then
+    echo ""
+    echo "⚠ sign_update not found in SourcePackages or PATH."
+    echo "  Skipping Sparkle signature step. Run xcodebuild once with the"
+    echo "  Sparkle SPM dep resolved, then re-run this script."
+    exit 0
+fi
+
+# Run sign_update. The output is one line of attributes:
+#   sparkle:edSignature="…" length="…"
+# which we capture verbatim and embed in the appcast <item> block below.
+if [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
+    if [ ! -r "$SPARKLE_PRIVATE_KEY" ]; then
+        echo "error: SPARKLE_PRIVATE_KEY=$SPARKLE_PRIVATE_KEY is not readable" >&2
+        exit 1
+    fi
+    # `-f <file>` reads the base64 private key from disk instead of the
+    # default Keychain entry. Useful in CI where the keychain isn't unlocked.
+    SPARKLE_SIG_ATTRS="$("$SIGN_UPDATE" -f "$SPARKLE_PRIVATE_KEY" "$DMG_PATH")"
+else
+    # Default path: sign_update reads "Private key for signing Sparkle updates"
+    # from the login keychain. Requires the dev machine to have run
+    # `bin/generate_keys` at least once.
+    SPARKLE_SIG_ATTRS="$("$SIGN_UPDATE" "$DMG_PATH")"
+fi
+
+# Derive the values we need for the appcast XML.
+DMG_FILENAME="$(basename "$DMG_PATH")"
+# Pull MARKETING_VERSION + CURRENT_PROJECT_VERSION out of the built app so the
+# appcast item matches what the binary self-reports.
+APP_PLIST="$APP_PATH/Contents/Info.plist"
+APP_VERSION="$(defaults read "$APP_PLIST" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")"
+BUILD_NUMBER="$(defaults read "$APP_PLIST" CFBundleVersion 2>/dev/null || echo "0")"
+PUB_DATE="$(LC_TIME=en_US.UTF-8 date -u "+%a, %d %b %Y %H:%M:%S +0000")"
+# GitHub Releases is the default DMG host — tag convention is `vX.Y.Z` and
+# the DMG is attached as a release asset. Override with SPARKLE_DOWNLOAD_URL
+# if you're hosting elsewhere.
+DOWNLOAD_URL="${SPARKLE_DOWNLOAD_URL:-https://github.com/ammesatyajit/hourglass/releases/download/v${APP_VERSION}/${DMG_FILENAME}}"
+
+echo ""
+echo "✓ Sparkle signed: $DMG_PATH"
+echo ""
+echo "----- Paste into appcast.xml (inside <channel>) ----------------------"
+cat <<EOF
+        <item>
+            <title>Version ${APP_VERSION}</title>
+            <pubDate>${PUB_DATE}</pubDate>
+            <sparkle:version>${BUILD_NUMBER}</sparkle:version>
+            <sparkle:shortVersionString>${APP_VERSION}</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="${DOWNLOAD_URL}"
+                type="application/octet-stream"
+                ${SPARKLE_SIG_ATTRS} />
+        </item>
+EOF
+echo "----------------------------------------------------------------------"

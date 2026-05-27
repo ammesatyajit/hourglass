@@ -1,5 +1,6 @@
 import SwiftUI
 import KeyboardShortcuts
+import Sparkle
 
 @main
 struct HourglassApp: App {
@@ -91,6 +92,20 @@ private struct MenuBarContent: View {
 
         Divider()
 
+        // Sparkle "Check for Updates…" — pulls the appcast declared in
+        // Info.plist's SUFeedURL, verifies the signed update via
+        // SUPublicEDKey, and (on a confirmed newer build) shows the
+        // standard Sparkle update panel. The action target is the
+        // SPUStandardUpdaterController owned by AppDelegate; calling
+        // `checkForUpdates(_:)` is the documented "user-initiated check"
+        // entry point and is always safe to invoke from a button click.
+        // We disable the button when Sparkle reports it can't currently
+        // check (e.g. a check is already in-flight) so we don't queue
+        // duplicate checks.
+        CheckForUpdatesMenuItem(updater: appDelegate.updaterController.updater)
+
+        Divider()
+
         SettingsLink {
             Text("Settings…")
         }
@@ -102,6 +117,49 @@ private struct MenuBarContent: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q", modifiers: .command)
+    }
+}
+
+// MARK: - Sparkle Check-for-Updates menu item
+//
+// Sparkle's recommended SwiftUI integration: observe `SPUUpdater.canCheckForUpdates`
+// via KVO + Combine, and disable the button when a check is in-flight.
+//
+// We intentionally keep this as a tiny standalone view rather than mixing
+// the `@ObservedObject` plumbing into `MenuBarContent` — the view-model
+// has its own lifecycle that we want collapsed with the button.
+//
+// Reference: https://sparkle-project.org/documentation/programmatic-setup/
+
+@MainActor
+private final class CheckForUpdatesViewModel: ObservableObject {
+    @Published var canCheckForUpdates: Bool = false
+
+    init(updater: SPUUpdater) {
+        updater.publisher(for: \.canCheckForUpdates)
+            .assign(to: &$canCheckForUpdates)
+    }
+}
+
+private struct CheckForUpdatesMenuItem: View {
+    @StateObject private var viewModel: CheckForUpdatesViewModel
+    private let updater: SPUUpdater
+
+    init(updater: SPUUpdater) {
+        self.updater = updater
+        // @StateObject's wrappedValue closure is invoked exactly once for
+        // the lifetime of the view — safe to construct the VM here even
+        // though `updater` is captured by reference. The VM's KVO
+        // subscription stays alive until the view is removed from the
+        // hierarchy (which, for a menu bar item, is "process lifetime").
+        _viewModel = StateObject(wrappedValue: CheckForUpdatesViewModel(updater: updater))
+    }
+
+    var body: some View {
+        Button("Check for Updates…") {
+            updater.checkForUpdates()
+        }
+        .disabled(!viewModel.canCheckForUpdates)
     }
 }
 
