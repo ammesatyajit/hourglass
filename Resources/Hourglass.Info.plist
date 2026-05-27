@@ -39,7 +39,7 @@
 	<key>SUEnableInstallerLauncherService</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://updates.example.com/hourglass/appcast.xml</string>
+	<string>https://ammesatyajit.github.io/hourglass/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>B++G1ipP8FLfOtD8wC92uXMrZx+L9j5EHPGp5upUxD8=</string>
 </dict>
