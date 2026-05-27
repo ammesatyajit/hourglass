@@ -9,6 +9,24 @@
         <description>Hourglass updates feed.</description>
         <language>en</language>
         <item>
+            <title>Version 0.2.1</title>
+            <pubDate>Wed, 27 May 2026 08:48:51 +0000</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Dashboard timeline slider</h3>
+                <ul>
+                    <li><strong>Drag anywhere on the bar to slide the brushed window.</strong> Previously only the colored pill itself was draggable; the dim sides were inert. Now the whole strip responds to drag-to-translate.</li>
+                    <li>Added a center grip indicator (three dots) on the pill so it's visually obvious it's draggable.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.2.1/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="oBEmR3nP05gEOTvzojUje9bpnhqbRcQ3NVpYVWLRyIdq6KMbCHQDZOhvg6S3zjgjyD1M3ex3XWWtnYO52rPzBg==" length="24755923" />
+        </item>
+        <item>
             <title>Version 0.2.0</title>
             <pubDate>Wed, 27 May 2026 07:17:29 +0000</pubDate>
             <sparkle:version>2</sparkle:version>

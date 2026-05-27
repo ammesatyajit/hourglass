@@ -169,8 +169,16 @@ struct TimelineNavigator: View {
 
             ZStack(alignment: .topLeading) {
                 // Solid background so the sparkline reads against it.
+                // The background also carries the pill-translate gesture
+                // so dragging ANYWHERE on the strip (not just the colored
+                // pill) translates the brush. Handles draw on top with
+                // their own gesture and win at the edges.
                 RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
                     .fill(Color.contentBackground.opacity(0.6))
+                    .contentShape(Rectangle())
+                    .gesture(
+                        enabled ? pillDragGesture(math: math) : nil
+                    )
 
                 // Sparkline (full-history area).
                 sparkline(width: width, height: height)
@@ -193,7 +201,10 @@ struct TimelineNavigator: View {
                     .fill(Color.primary.opacity(0.06))
                     .allowsHitTesting(false)
 
-                    // Window pill (fill + stroke).
+                    // Window pill (fill + stroke). Same gesture as the
+                    // background — duplicating is fine; only one wins
+                    // per hit. The pill needs its own attachment so the
+                    // cursor + tooltip on the pill body still works.
                     windowPill(rect: pillRect)
                         .gesture(
                             enabled ? pillDragGesture(math: math) : nil
@@ -344,7 +355,11 @@ struct TimelineNavigator: View {
 
     /// Translucent window pill — the rectangle highlighting the active
     /// brush range. Filled with accent at low opacity, with a stroke at
-    /// medium opacity so it reads cleanly against the sparkline.
+    /// medium opacity so it reads cleanly against the sparkline. A small
+    /// "grip" of three vertical dots sits at the center to telegraph that
+    /// the pill is draggable (mirrors the affordance of any drag-handle
+    /// in AppKit's stock controls). The grip only renders when the pill
+    /// is wide enough to host it without crowding the resize handles.
     @ViewBuilder
     private func windowPill(rect: CGRect) -> some View {
         ZStack {
@@ -352,6 +367,20 @@ struct TimelineNavigator: View {
                 .fill(Color.accentColor.opacity(0.15))
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1)
+            // Center grip — three vertical dots, accent tint, low opacity
+            // so it doesn't compete with the sparkline behind it. Only
+            // shown when the pill is wider than ~40pt so it doesn't
+            // collide with the resize handles at the edges on tight brushes.
+            if rect.width >= 40 {
+                HStack(spacing: 2) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.7))
+                            .frame(width: 2.5, height: 2.5)
+                    }
+                }
+                .accessibilityHidden(true)
+            }
         }
         .frame(width: rect.width, height: rect.height)
         .offset(x: rect.minX, y: rect.minY)
