@@ -33,9 +33,18 @@ public struct ResolvedContacts: Sendable {
     /// All unique contacts, sorted by display name.
     public let allContacts: [Contact]
 
-    public init(byHandle: [Handle: Contact], allContacts: [Contact]) {
+    /// The AddressBook "Me" record, when found. Detected via
+    /// `ZABCDRECORD.ZCONTAINERWHERECONTACTISME IS NOT NULL` — the column
+    /// AddressBook populates on whichever record the user marked as their
+    /// own "Me" card. Used by `MessageSearch` to expand `from:me` to also
+    /// match `from:"<my name>"` and `from:"<my phone/email>"`. Nil when no
+    /// "Me" record exists (uncommon — macOS prompts new users to set one).
+    public let meContact: Contact?
+
+    public init(byHandle: [Handle: Contact], allContacts: [Contact], meContact: Contact? = nil) {
         self.byHandle = byHandle
         self.allContacts = allContacts
+        self.meContact = meContact
     }
 
     /// Lookup convenience. Returns nil for unknown handles — callers should
@@ -123,6 +132,12 @@ public enum ContactResolver {
             var displayName: String
             var handles: Set<Handle>
             var avatar: Data?
+            /// True if this AB record is the "Me" card for its source DB
+            /// (`ZCONTAINERWHERECONTACTISME IS NOT NULL`). Propagates through
+            /// the cross-source union-find merge below so that even if one
+            /// source's "Me" entry has no handles of its own, a merged group
+            /// containing it is still marked as `meContact`.
+            var isMe: Bool
         }
         var perRecord: [RecordKey: RecordAcc] = [:]
 
@@ -148,6 +163,7 @@ public enum ContactResolver {
             let handleRows: [Row] = (try? queue.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT r.Z_PK AS pk, r.ZFIRSTNAME, r.ZLASTNAME,
+                           r.ZCONTAINERWHERECONTACTISME AS me_container,
                            p.ZFULLNUMBER, e.ZADDRESS
                     FROM ZABCDRECORD r
                     LEFT JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
@@ -195,11 +211,16 @@ public enum ContactResolver {
                 guard !displayName.isEmpty else { continue }
 
                 let key = RecordKey(source: dbURL, pk: pk)
+                let isMe: Bool = (row["me_container"] as Int64?) != nil
                 var acc = perRecord[key] ?? RecordAcc(
                     displayName: displayName,
                     handles: [],
-                    avatar: imageBlobsByPK[pk]
+                    avatar: imageBlobsByPK[pk],
+                    isMe: isMe
                 )
+                // Same key seen across multiple LEFT JOIN rows: keep isMe
+                // sticky (any sighting wins).
+                if isMe { acc.isMe = true }
 
                 if let phone, !phone.isEmpty {
                     let h = Handle(raw: phone)
@@ -265,16 +286,19 @@ public enum ContactResolver {
         // Materialize one Contact per group.
         var contacts: [Contact] = []
         var byHandle: [Handle: Contact] = [:]
+        var meContact: Contact? = nil
         contacts.reserveCapacity(groups.count)
         for (_, memberKeys) in groups {
             var displayName = ""
             var handles: Set<Handle> = []
             var avatar: Data? = nil
+            var groupIsMe = false
             for k in memberKeys {
                 let acc = perRecord[k]!
                 if displayName.isEmpty { displayName = acc.displayName }
                 handles.formUnion(acc.handles)
                 if avatar == nil { avatar = acc.avatar }
+                if acc.isMe { groupIsMe = true }
             }
             guard !displayName.isEmpty else { continue }
             let c = Contact(displayName: displayName, handles: handles, avatarData: avatar)
@@ -285,9 +309,25 @@ public enum ContactResolver {
                 // groups, so this is no longer a last-writer-wins race.
                 byHandle[h] = c
             }
+            // Multiple "Me" records across sources can survive union-find
+            // when they share no handle overlap (rare — the user typically
+            // has at least one phone/email in common). Pick the one with
+            // the most handles as the canonical Me; ties broken by name to
+            // stay deterministic.
+            if groupIsMe {
+                if let existing = meContact {
+                    if c.handles.count > existing.handles.count
+                        || (c.handles.count == existing.handles.count
+                            && c.displayName.localizedCaseInsensitiveCompare(existing.displayName) == .orderedAscending) {
+                        meContact = c
+                    }
+                } else {
+                    meContact = c
+                }
+            }
         }
         contacts.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 
-        return ResolvedContacts(byHandle: byHandle, allContacts: contacts)
+        return ResolvedContacts(byHandle: byHandle, allContacts: contacts, meContact: meContact)
     }
 }

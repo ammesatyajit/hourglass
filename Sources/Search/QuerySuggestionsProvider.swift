@@ -59,7 +59,13 @@ public enum QuerySuggestionsProvider {
             // chat (1:1 or group) that person participates in. Use the
             // person suggester so contacts auto-complete cleanly.
             return personSuggestions(partial: context.partialValue, contacts: contacts)
-        case .from, .to:
+        case .from:
+            return personSuggestions(
+                partial: context.partialValue,
+                contacts: contacts,
+                includeMe: true
+            )
+        case .to:
             return personSuggestions(partial: context.partialValue, contacts: contacts)
         case .before, .after, .on, .last:
             return dateSuggestions(partial: context.partialValue)
@@ -91,10 +97,30 @@ public enum QuerySuggestionsProvider {
 
     // MARK: - from / to
 
-    static func personSuggestions(partial: String, contacts: [Contact]) -> [QuerySuggestion] {
+    static func personSuggestions(
+        partial: String,
+        contacts: [Contact],
+        includeMe: Bool = false
+    ) -> [QuerySuggestion] {
+        // `me` is offered only for `from:` (not `to:`) — it expands to
+        // `is_from_me = 1`. We prepend it when the partial value is empty
+        // or prefix-matches "me" so it stays in front of any contact named
+        // "Melissa" etc.
+        var leading: [QuerySuggestion] = []
+        if includeMe {
+            let p = partial.lowercased()
+            if p.isEmpty || "me".hasPrefix(p) {
+                leading.append(QuerySuggestion(
+                    id: -1, value: "me", kind: .person,
+                    subtitle: "messages you sent"
+                ))
+            }
+        }
+
         let names = contacts.map(\.displayName)
-        let ranked = QueryAutocomplete.rank(names, partial: partial, limit: maxSuggestions)
-        return ranked.enumerated().map { idx, value in
+        let remaining = max(0, maxSuggestions - leading.count)
+        let ranked = QueryAutocomplete.rank(names, partial: partial, limit: remaining)
+        let tail: [QuerySuggestion] = ranked.enumerated().map { idx, value in
             // Build a subtitle from the first 1-2 handles of that contact so
             // the user can disambiguate e.g. multiple "Alex Chen"s.
             var subtitle: String? = nil
@@ -106,6 +132,7 @@ public enum QuerySuggestionsProvider {
             }
             return QuerySuggestion(id: idx, value: value, kind: .person, subtitle: subtitle)
         }
+        return leading + tail
     }
 
     // MARK: - date

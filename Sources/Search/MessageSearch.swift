@@ -117,13 +117,32 @@ public struct MessageSearch: Sendable {
     ///   or a **1:1 chat** whose participant resolves to `name`. Does
     ///   NOT match groups by participant — that's what `with:` is for.
     ///   Multiple `chat:` tokens are AND'd. Multi-word values via quotes:
-    ///   `chat:"Lost Causes"`.
+    ///   `chat:"Lost Causes"`. **Comma-separated values** identify a
+    ///   group by its participant roster — Messages.app prints unnamed
+    ///   groups as a comma list like "Noah, Annika, Justin", so
+    ///   `chat:"Noah, Annika, Justin"` matches a group chat whose
+    ///   participants are EXACTLY those three (no more, no less). The
+    ///   exactness is what keeps the operator distinct from `with:`:
+    ///   `with:Noah with:Annika with:Justin` matches any chat where all
+    ///   three participate (including larger groups with extras);
+    ///   `chat:"Noah, Annika, Justin"` matches THE group of those
+    ///   three. Single values (no comma) keep the narrow display_name +
+    ///   1:1 semantics so they don't collide with `with:`.
     /// - `with:name`: scope to **any chat (1:1 OR group) that this
     ///   person participates in**. Resolves `name` against contacts and
     ///   raw handles. Multiple `with:` tokens AND together (chats where
-    ///   ALL named people participate).
+    ///   ALL named people participate). Comma-separated values inside a
+    ///   single token AND too — `with:"Howard, Mom"` ≡ `with:Howard
+    ///   with:Mom`. Loose semantics (extras OK): a 10-person group with
+    ///   Howard and Mom both in it qualifies. Use `chat:"A, B, C"` when
+    ///   you want the EXACT-roster variant.
     /// - `from:person`: messages SENT BY person (matches contact display name
     ///   or raw handle). Multiple `from:` AND together.
+    /// - `from:me`: messages YOU sent (`is_from_me = 1`). The literal alias
+    ///   `me` always works; additionally, when the AddressBook "Me" record
+    ///   was detected at resolve time, the user's own name or any of their
+    ///   own handles (`from:"My Name"`, `from:415…`, etc.) also resolve to
+    ///   "sent by me."
     /// - `to:person`: messages SENT TO person — `is_from_me = 1` AND chat
     ///   participants include `person`. Multiple `to:` AND together.
     /// - `before:date` / `after:date` / `on:date`: explicit date operators.
@@ -863,6 +882,18 @@ public struct MessageSearch: Sendable {
     /// 1:1 chats because they have no display_name. The (b) branch is
     /// restored here, *scoped to style=45 only* so the operator stays
     /// meaningfully distinct from `with:`.
+    ///
+    /// 2026-05-26 follow-up: branch (c) added for **unnamed group
+    /// chats**. Messages.app renders an unnamed group as a
+    /// comma-separated list of its participants ("Noah, Annika, Justin")
+    /// — so users naturally identify those chats by typing the same
+    /// list. Without (c), `chat:"Noah, Annika, Justin"` returned 0
+    /// because display_name was empty and (b) is 1:1-only. The new
+    /// branch splits comma-separated values, resolves each piece to
+    /// handles, and matches a group (style=43) when ALL the pieces
+    /// participate. Single-piece values (no commas) keep the original
+    /// two-branch semantics — `with:` is still the operator for "any
+    /// chat this person is in."
     static func chatClause(
         _ filters: [String],
         contacts: ResolvedContacts
@@ -895,6 +926,70 @@ public struct MessageSearch: Sendable {
                 """)
             for h in resolved { args.append(h) }
             args.append("%\(filter)%")
+
+            // (c) Group chats identified by their participant roster.
+            //     The user typed `chat:"A, B, C"` because that's how
+            //     Messages.app prints unnamed groups in its sidebar. The
+            //     intent is "THIS specific group" — exactly the people
+            //     listed, no more, no less. That's the bright line that
+            //     keeps `chat:` distinct from `with:`: `with:A with:B
+            //     with:C` finds any chat where all three participate
+            //     (including a 12-person group with extras); `chat:"A,
+            //     B, C"` finds the chat that IS those three.
+            //
+            //     Implementation:
+            //       - Trigger only on comma-separated values (≥2
+            //         non-empty pieces).
+            //       - Each piece must match a participant of the chat
+            //         (same OR-set + LIKE-substring as `with:`).
+            //       - The chat's participant COUNT must equal the
+            //         number of pieces. This is what excludes
+            //         supersets ("Aeternus 2" with extras) from
+            //         matching `chat:"Noah, Annika, Justin"`.
+            //       - style = 43 (groups). 1:1 chats stay on branch (b).
+            //
+            //     Edge case noted but not handled: a person can in
+            //     theory join a group with both their phone and email
+            //     so they appear TWICE in chat_handle_join — that would
+            //     break the count check. iMessage doesn't normally do
+            //     this (one handle per person per group), so the
+            //     simple COUNT(*) suffices for the common case.
+            let pieces = filter
+                .split(separator: ",", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if pieces.count >= 2 {
+                var pieceArgs: [DatabaseValueConvertible] = []
+                var andParts: [String] = []
+                for piece in pieces {
+                    let pResolved = resolveHandles(forFilter: piece, contacts: contacts)
+                    let pPlace = Array(repeating: "?", count: pResolved.count)
+                        .joined(separator: ", ")
+                    andParts.append("""
+                        ch.ROWID IN (
+                            SELECT chj.chat_id
+                            FROM chat_handle_join chj
+                            JOIN handle ph ON ph.ROWID = chj.handle_id
+                            WHERE ph.id IN (\(pPlace))
+                               OR ph.id LIKE ?
+                        )
+                        """)
+                    for h in pResolved { pieceArgs.append(h) }
+                    pieceArgs.append("%\(piece)%")
+                }
+                orParts.append("""
+                    (ch.style = 43
+                     AND (SELECT COUNT(*) FROM chat_handle_join chj WHERE chj.chat_id = ch.ROWID) = ?
+                     AND \(andParts.joined(separator: " AND ")))
+                    """)
+                // Args order matches placeholder order in the emitted SQL:
+                // the COUNT comparator binds before the per-piece IN/LIKE
+                // pairs. Adding the per-piece args inside the loop above
+                // would put them ahead of the count — hence the deferred
+                // pieceArgs accumulator.
+                args.append(pieces.count)
+                args.append(contentsOf: pieceArgs)
+            }
 
             clauses.append("(" + orParts.joined(separator: " OR ") + ")")
         }
@@ -935,14 +1030,56 @@ public struct MessageSearch: Sendable {
         return Array(handles)
     }
 
+    /// True when this `from:` filter value should be interpreted as "me"
+    /// (i.e. expand to `is_from_me = 1` rather than a sender-handle match).
+    ///
+    /// Two paths trigger this:
+    ///   1. Literal alias — the lowercased value is exactly `"me"`. Always
+    ///      on, no AddressBook needed. This is the documented shorthand
+    ///      surfaced by `from:me` in help / autocomplete / the NL agent's
+    ///      system prompt.
+    ///   2. AddressBook "Me" record — when `ContactResolver` detected a
+    ///      record marked via `ZCONTAINERWHERECONTACTISME IS NOT NULL`,
+    ///      its name OR any of its handles also count as `me`. Lets the
+    ///      user type their own phone/email/name and have it resolve to
+    ///      sent messages, mirroring how `from:Mom` resolves Mom's
+    ///      handles.
+    ///
+    /// Matching for path 2 uses the same case-insensitive substring rule
+    /// `resolveHandles` uses elsewhere — so `from:satya` works when the Me
+    /// record is "Satyajit Kumar". Empty filters never match (defensive
+    /// guard against `from:""` accidentally turning into `is_from_me = 1`).
+    static func isMeFilter(_ filter: String, contacts: ResolvedContacts) -> Bool {
+        let trimmed = filter.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        if lower == "me" { return true }
+        guard let me = contacts.meContact else { return false }
+        if me.displayName.lowercased().contains(lower) { return true }
+        for h in me.handles {
+            if h.raw.lowercased().contains(lower) { return true }
+            if h.normalized.lowercased().contains(lower) { return true }
+        }
+        return false
+    }
+
     /// Build the `from:` predicate. Each filter restricts to messages that:
     ///   - are NOT from me (is_from_me = 0)
     ///   - have a sender handle that matches the resolved person.
     ///
+    /// **`from:me` special case**: filters that pass `isMeFilter` emit
+    /// `is_from_me = 1` instead — this is how `from:me`, `from:"<my own
+    /// name>"`, and `from:"<my own phone/email>"` all resolve to "sent by
+    /// me." See `isMeFilter` for the matching rules.
+    ///
     /// Multiple `from:` AND together (a message can't be from two people, so
     /// AND across filters in practice means "all filters must match the same
     /// sender" — most users will use one). For OR-within-filter we just dump
-    /// all candidate handles into an `IN` list.
+    /// all candidate handles into an `IN` list. AND-ing a me-filter with a
+    /// non-me filter (e.g. `from:me from:mom`) yields an impossible predicate
+    /// (`is_from_me = 1 AND is_from_me = 0`) and returns zero results — the
+    /// SQL is well-formed, just contradictory, which is the right behavior
+    /// for a literally-impossible query.
     static func fromClause(
         _ filters: [String],
         contacts: ResolvedContacts
@@ -950,7 +1087,18 @@ public struct MessageSearch: Sendable {
         guard !filters.isEmpty else { return ("", []) }
         var clauses: [String] = []
         var args: [DatabaseValueConvertible] = []
+        var sawMe = false
         for filter in filters {
+            if isMeFilter(filter, contacts: contacts) {
+                // Collapse multiple `me` synonyms — `from:me from:Satyajit`
+                // both mean "sent by me", so one `is_from_me = 1` clause is
+                // enough. Without this we'd emit a redundant duplicate.
+                if !sawMe {
+                    clauses.append("(m.is_from_me = 1)")
+                    sawMe = true
+                }
+                continue
+            }
             let candidates = resolveHandles(forFilter: filter, contacts: contacts)
             guard !candidates.isEmpty else { continue }
             let placeholders = Array(repeating: "?", count: candidates.count).joined(separator: ", ")
@@ -1021,6 +1169,10 @@ public struct MessageSearch: Sendable {
     ///
     /// Multiple `with:` filters AND together: `with:howard with:mom` =
     /// chats where BOTH Howard and Mom participate (typically a group).
+    /// **Comma-separated values** inside a single `with:` token are
+    /// also AND'd — `with:"Howard, Mom"` is the same as `with:howard
+    /// with:mom` (and the same query shape the user typed for `chat:`
+    /// just gets the loose semantics here — extras OK).
     ///
     /// Resolution: `resolveHandles` produces candidate handles for the
     /// filter substring (contact display name + raw + normalized handle).
@@ -1033,38 +1185,54 @@ public struct MessageSearch: Sendable {
         var clauses: [String] = []
         var args: [DatabaseValueConvertible] = []
         for filter in filters {
-            let resolved = resolveHandles(forFilter: filter, contacts: contacts)
-            // `resolveHandles` always returns at least the raw filter if no
-            // contact matched, so this is never empty. Defensive guard:
-            guard !resolved.isEmpty else { continue }
-            let placeholders = Array(repeating: "?", count: resolved.count).joined(separator: ", ")
-            // Any chat (1:1 OR group) whose participants include the
-            // resolved person. The previous `ch.style = 45` clause was
-            // dropped in 2026-05-25 — the user wanted `with:` to mean "all
-            // chats with this person" rather than "their 1:1 only."
-            //
-            // Two-branch match per chat:
-            //   (a) EXACT: `ph.id IN (resolved...)` — when `resolveHandles`
-            //       produces the full canonical handle string (the common
-            //       case when the filter resolves through AddressBook).
-            //   (b) SUBSTRING: `ph.id LIKE %filter%` — when the user types
-            //       a partial handle like `with:888` and the AddressBook
-            //       doesn't have a contact entry to resolve. Without this
-            //       branch, `resolveHandles` falls through to the raw
-            //       filter string, and `IN ('888')` then fails to match
-            //       the actual `+15558889999` row. Bug pinned by
-            //       `ChatOperatorE2ETests.test_with_handleSubstring_*`.
-            clauses.append("""
-                (ch.ROWID IN (
-                    SELECT chj.chat_id
-                    FROM chat_handle_join chj
-                    JOIN handle ph ON ph.ROWID = chj.handle_id
-                    WHERE ph.id IN (\(placeholders))
-                       OR ph.id LIKE ?
-                ))
-                """)
-            for h in resolved { args.append(h) }
-            args.append("%\(filter)%")
+            // Split commas so `with:"A, B, C"` AND's the participants
+            // the same way three separate `with:` tokens would. Single
+            // values fall through to a one-element list and behave
+            // exactly like before. Empty pieces are dropped — leading
+            // comma, trailing comma, or `with:","` shouldn't blow up.
+            let pieces = filter
+                .split(separator: ",", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let effectivePieces = pieces.isEmpty ? [filter] : pieces
+
+            for piece in effectivePieces {
+                let resolved = resolveHandles(forFilter: piece, contacts: contacts)
+                // `resolveHandles` always returns at least the raw filter
+                // if no contact matched, so this is never empty.
+                // Defensive guard:
+                guard !resolved.isEmpty else { continue }
+                let placeholders = Array(repeating: "?", count: resolved.count).joined(separator: ", ")
+                // Any chat (1:1 OR group) whose participants include the
+                // resolved person. The previous `ch.style = 45` clause was
+                // dropped in 2026-05-25 — the user wanted `with:` to mean
+                // "all chats with this person" rather than "their 1:1 only."
+                //
+                // Two-branch match per chat:
+                //   (a) EXACT: `ph.id IN (resolved...)` — when `resolveHandles`
+                //       produces the full canonical handle string (the
+                //       common case when the filter resolves through
+                //       AddressBook).
+                //   (b) SUBSTRING: `ph.id LIKE %piece%` — when the user
+                //       types a partial handle like `with:888` and the
+                //       AddressBook doesn't have a contact entry to
+                //       resolve. Without this branch, `resolveHandles`
+                //       falls through to the raw filter string, and
+                //       `IN ('888')` then fails to match the actual
+                //       `+15558889999` row. Bug pinned by
+                //       `ChatOperatorE2ETests.test_with_handleSubstring_*`.
+                clauses.append("""
+                    (ch.ROWID IN (
+                        SELECT chj.chat_id
+                        FROM chat_handle_join chj
+                        JOIN handle ph ON ph.ROWID = chj.handle_id
+                        WHERE ph.id IN (\(placeholders))
+                           OR ph.id LIKE ?
+                    ))
+                    """)
+                for h in resolved { args.append(h) }
+                args.append("%\(piece)%")
+            }
         }
         if clauses.isEmpty { return ("", []) }
         return ("AND (" + clauses.joined(separator: " AND ") + ")", args)

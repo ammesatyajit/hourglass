@@ -92,6 +92,12 @@ extension HelpSection {
                     category: .person
                 ),
                 .init(
+                    token: "from:me",
+                    description: "Messages YOU sent. Your own name / phone / email also work.",
+                    example: "from:me",
+                    category: .person
+                ),
+                .init(
                     token: "to:NAME",
                     description: "Messages YOU sent to NAME.",
                     example: "to:Alex",
