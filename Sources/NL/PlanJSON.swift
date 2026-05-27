@@ -7,9 +7,10 @@
 //  fields ignored). The shape is documented in `docs/nl-search-design.md`
 //  § Q2 — keep this file in sync with the system prompt the runtime ships.
 //
-//  The parser is *defensive*: small models like Qwen 2.5 1.5B occasionally
-//  emit markdown fences, prose preamble, or trailing chatter. We strip
-//  fences, locate the first `{ ... }` block, and parse just that.
+//  The parser is *defensive*: small instruct models (Qwen 2.5 1.5B
+//  historically, now Gemma 4 E2B IT) occasionally emit markdown fences,
+//  prose preamble, or trailing chatter. We strip fences, locate the
+//  first `{ ... }` block, and parse just that.
 //
 
 import Foundation

@@ -176,7 +176,7 @@ public final class ModelDownloader {
     private var rateSamples: [(t: Date, bytes: Int64)] = []
     private let maxSamples = 10
 
-    public init(modelID: String = "mlx-community/Qwen2.5-1.5B-Instruct-4bit") {
+    public init(modelID: String = "mlx-community/gemma-4-e2b-it-4bit") {
         self.modelID = modelID
         // We DON'T flip state to `.ready` here even if the cache exists —
         // having the files on disk isn't the same as having the model

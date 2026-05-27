@@ -133,13 +133,13 @@ final class MLXRuntimeTests: XCTestCase {
 
     @MainActor
     func testDownloader_modelCachePath_followsHFConvention() {
-        let dl = ModelDownloader(modelID: "mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+        let dl = ModelDownloader(modelID: "mlx-community/gemma-4-e2b-it-4bit")
         let p = dl.modelCachePath.path
         XCTAssertTrue(p.contains(".cache"),
                       "cache path should be under ~/.cache: \(p)")
         XCTAssertTrue(p.contains("huggingface"),
                       "cache path should be HF-conventional: \(p)")
-        XCTAssertTrue(p.contains("models--mlx-community--Qwen2.5-1.5B-Instruct-4bit"),
+        XCTAssertTrue(p.contains("models--mlx-community--gemma-4-e2b-it-4bit"),
                       "cache path should encode the model ID HF-style: \(p)")
     }
 
@@ -259,7 +259,7 @@ final class MLXRuntimeTests: XCTestCase {
         guard RUN_MLX_INTEGRATION else {
             throw XCTSkip("MLX integration disabled by default. Flip RUN_MLX_INTEGRATION in MLXRuntimeTests to bench.")
         }
-        let modelID = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        let modelID = "mlx-community/gemma-4-e2b-it-4bit"
         guard ModelDownloader.cachedSnapshotExists(for: modelID) else {
             throw XCTSkip("Model not cached on this machine. Run app once and click Download to pre-warm, or skip integration test.")
         }

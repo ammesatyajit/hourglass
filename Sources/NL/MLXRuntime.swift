@@ -71,7 +71,7 @@ public actor MLXRuntime: LLMRuntime {
 
     public init(
         container: ModelContainer,
-        modelLabel: String = "Qwen 2.5 1.5B (MLX)"
+        modelLabel: String = "Gemma 4 E2B IT (MLX)"
     ) {
         self.container = container
         self.modelLabel = modelLabel

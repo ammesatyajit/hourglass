@@ -100,7 +100,7 @@ final class MLXBenchmarkTests: XCTestCase {
             throw XCTSkip("MLX benchmark disabled by default. Flip RUN_BENCHMARK in MLXBenchmarkTests to run.")
         }
 
-        let modelID = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        let modelID = "mlx-community/gemma-4-e2b-it-4bit"
         guard ModelDownloader.cachedSnapshotExists(for: modelID) else {
             throw XCTSkip("Model not cached. Run app first to trigger download.")
         }
@@ -175,7 +175,7 @@ final class MLXBenchmarkTests: XCTestCase {
     /// runs (no gate). Helps the probe script know whether the real
     /// bench can be invoked.
     func testMLXBenchmark_modelCachePresent() throws {
-        let modelID = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        let modelID = "mlx-community/gemma-4-e2b-it-4bit"
         let present = ModelDownloader.cachedSnapshotExists(for: modelID)
         print("[BENCH] runtime=MLX phase=cache_probe model=\(modelID) present=\(present)")
         // No assertion — informational.

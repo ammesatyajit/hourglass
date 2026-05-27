@@ -56,7 +56,7 @@ public final class NLSearchViewModel {
     public private(set) var runtimeNotReadyReason: String?
 
     /// Display label for the active runtime — surfaced in the trace footer
-    /// ("Powered by Qwen 2.5 1.5B" or "Powered by StubLLMRuntime"). Updates
+    /// ("Powered by Gemma 4 E2B IT" or "Powered by StubLLMRuntime"). Updates
     /// when `replaceAgent` swaps the runtime.
     public private(set) var runtimeLabel: String
 

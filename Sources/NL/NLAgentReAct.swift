@@ -378,7 +378,8 @@ public extension NLAgent {
                 lastCandidates = results
                 // Show ALL results returned (capped at 30 to keep prompts
                 // sane). With limit=20-30 and ~400 char obs lines this is
-                // ~6-9k chars — within Qwen 1.5B's effective context.
+                // ~6-9k chars — well within Gemma 4 E2B's context budget
+                // (and was within Qwen 2.5 1.5B's effective context too).
                 let displayCount = min(results.count, 30)
                 let preview = results.prefix(displayCount).enumerated().map { (i, r) in
                     NLAgent.formatResultLine(index: i, result: r)

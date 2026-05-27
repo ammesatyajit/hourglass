@@ -52,17 +52,23 @@ public final class NLAgent: Sendable {
     /// If you change this prompt, also re-tune `StubLLMRuntime.defaultPlans`
     /// so canned outputs still match the contract.
     ///
-    /// Prompt design notes (for a 1.5B model)
-    /// --------------------------------------
-    /// - Lead with the ONE concrete example. 1.5B models follow the most
-    ///   recent / most concrete pattern in the prompt, not the abstract
-    ///   schema description.
+    /// Prompt design notes
+    /// -------------------
+    /// (Originally tuned for Qwen 2.5 1.5B; the model now defaults to
+    /// Gemma 4 E2B IT — same prompt works because both follow concrete
+    /// examples better than abstract schemas. Keep these heuristics
+    /// when iterating.)
+    /// - Lead with the ONE concrete example. Small instruct models follow
+    ///   the most recent / most concrete pattern in the prompt, not the
+    ///   abstract schema description.
     /// - Few-shot examples cover the canonical query repertoire from the
     ///   design doc (Q3). Each shows one fresh decision (intent choice,
     ///   person extraction, time window inference, search_query OR-joining).
     /// - Hard-line the "respond ONLY with JSON, no prose, no fences" rule.
-    /// - Keep under ~800 tokens — Qwen 1.5B has a small effective context
-    ///   for instruction following, and the user query already eats some.
+    /// - Keep under ~800 tokens for the system prompt. Even though Gemma
+    ///   4 has a much larger context, instruction following degrades
+    ///   when the prompt sprawls, and the user query already eats some
+    ///   budget.
     /// - `search_query` examples teach the operator vocabulary AND the
     ///   OR pattern for concept expansion (argument → "argument fight
     ///   disagreement upset"). Concept OR widens recall for fuzzy intents.
