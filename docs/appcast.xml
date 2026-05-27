@@ -32,5 +32,32 @@
         <link>https://ammesatyajit.github.io/hourglass/appcast.xml</link>
         <description>Hourglass updates feed.</description>
         <language>en</language>
+        <item>
+            <title>Version 0.2.0</title>
+            <pubDate>Wed, 27 May 2026 07:17:29 +0000</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Search</h3>
+                <ul>
+                    <li><code>from:me</code> and <code>from:"&lt;your name/phone&gt;"</code> match your sent messages (AddressBook "Me" record auto-detected).</li>
+                    <li><code>chat:"A, B, C"</code> matches a group with EXACTLY those participants — the unnamed-group case Messages.app renders as a comma list.</li>
+                    <li><code>with:"A, B, C"</code> splits commas and AND's the participants — the loose-superset variant.</li>
+                </ul>
+                <h3>Dashboard</h3>
+                <ul>
+                    <li>Timeline slider: fixed drag-past-swap regression and now shows the year on both bounds.</li>
+                </ul>
+                <h3>Updates</h3>
+                <ul>
+                    <li>Sparkle 2.x wired in — Check for Updates… in the menu bar.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.2.0/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="QotXLqBbvg1YDtOc5j61O0JbdKSxA18gOhJZ0zsnjp7OvO45L0L5uPs2+mT0EjeBEceXecV8NtE4T0oGNS+ACA==" length="24746537" />
+        </item>
     </channel>
 </rss>

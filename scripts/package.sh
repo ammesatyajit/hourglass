@@ -67,6 +67,48 @@ xcodebuild \
 APP_PATH="build/Build/Products/Release/Hourglass.app"
 DMG_PATH="build/Hourglass.dmg"
 
+# ---------------------------------------------------------------------------
+# Re-sign Sparkle's nested executables.
+#
+# xcodebuild's CODE_SIGN_IDENTITY only signs the top-level app + first-party
+# frameworks. The Sparkle.framework ships with its own pre-signed nested
+# executables (Updater.app, Autoupdate, Downloader.xpc, Installer.xpc) that
+# DO NOT inherit our Developer ID + secure timestamp. Apple's notary service
+# rejects the bundle with:
+#   "The binary is not signed with a valid Developer ID certificate."
+#   "The signature does not include a secure timestamp."
+#
+# Fix per Sparkle docs (https://sparkle-project.org/documentation/sandboxing/
+# #code-signing): re-sign each nested binary with our Developer ID + a secure
+# timestamp + the hardened runtime flag, deepest-first, then re-sign the
+# framework, then re-sign the app. `--preserve-metadata=entitlements,flags`
+# keeps Sparkle's own entitlements intact (the XPC services need them).
+# ---------------------------------------------------------------------------
+SPARKLE_VERSION_DIR="$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B"
+for target in \
+    "$SPARKLE_VERSION_DIR/XPCServices/Downloader.xpc" \
+    "$SPARKLE_VERSION_DIR/XPCServices/Installer.xpc" \
+    "$SPARKLE_VERSION_DIR/Autoupdate" \
+    "$SPARKLE_VERSION_DIR/Updater.app" \
+    "$APP_PATH/Contents/Frameworks/Sparkle.framework"; do
+    if [ -e "$target" ]; then
+        codesign --force --sign "$DEVELOPER_ID" \
+            --timestamp \
+            --options runtime \
+            --preserve-metadata=entitlements,flags \
+            "$target"
+    fi
+done
+
+# Re-sign the app itself with our own entitlements (NOT preserved — we want
+# Resources/Hourglass.entitlements to win, which `codesign --force` on the
+# bundle pulls in via the embedded .plist).
+codesign --force --sign "$DEVELOPER_ID" \
+    --timestamp \
+    --options runtime \
+    --entitlements Resources/Hourglass.entitlements \
+    "$APP_PATH"
+
 # Sanity check the signature.
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
@@ -146,10 +188,13 @@ fi
 # Derive the values we need for the appcast XML.
 DMG_FILENAME="$(basename "$DMG_PATH")"
 # Pull MARKETING_VERSION + CURRENT_PROJECT_VERSION out of the built app so the
-# appcast item matches what the binary self-reports.
+# appcast item matches what the binary self-reports. PlistBuddy is the right
+# tool here — `defaults read` silently fails when the path has a `.plist`
+# extension on a relative path, producing the placeholder "0.0.0" in the
+# printed <item> block.
 APP_PLIST="$APP_PATH/Contents/Info.plist"
-APP_VERSION="$(defaults read "$APP_PLIST" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")"
-BUILD_NUMBER="$(defaults read "$APP_PLIST" CFBundleVersion 2>/dev/null || echo "0")"
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST" 2>/dev/null || echo "0.0.0")"
+BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST" 2>/dev/null || echo "0")"
 PUB_DATE="$(LC_TIME=en_US.UTF-8 date -u "+%a, %d %b %Y %H:%M:%S +0000")"
 # GitHub Releases is the default DMG host — tag convention is `vX.Y.Z` and
 # the DMG is attached as a release asset. Override with SPARKLE_DOWNLOAD_URL
