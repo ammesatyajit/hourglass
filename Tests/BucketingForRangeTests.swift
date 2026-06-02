@@ -19,16 +19,27 @@ import XCTest
 
 final class BucketingForRangeTests: XCTestCase {
 
-    private let cal = Calendar(identifier: .gregorian)
-    private lazy var anchor: Date = {
-        var c = cal
+    // A Gregorian calendar pinned to the SAME zone as `anchor` (Pacific).
+    // `day(at:)` does calendar-day arithmetic, so the calendar's zone MUST
+    // match the anchor's — otherwise a machine in a European-DST zone spans
+    // the European spring-forward when stepping back 60 days, making a
+    // 60-day span measure 60d−1h. That flips the daily↔weekly boundary
+    // tests (see testJustOverSixtyDaysIsWeeklyNotDaily, which adds −1s
+    // expecting ceil→61 days). Pinning here keeps day arithmetic and the
+    // anchor in one zone on every machine, regardless of TimeZone.current.
+    private let cal: Calendar = {
+        var c = Calendar(identifier: .gregorian)
         c.timeZone = TimeZone(identifier: "America/Los_Angeles") ?? .current
+        return c
+    }()
+    private lazy var anchor: Date = {
+        // 2026-05-24 12:00 Pacific (`cal` is already pinned to LA).
         var comps = DateComponents()
         comps.year = 2026
         comps.month = 5
         comps.day = 24
         comps.hour = 12
-        return c.date(from: comps) ?? Date()
+        return cal.date(from: comps) ?? Date()
     }()
 
     // MARK: - Daily band (≤ 60 days)
