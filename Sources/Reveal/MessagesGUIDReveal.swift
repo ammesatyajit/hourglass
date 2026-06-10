@@ -85,6 +85,10 @@ public enum MessagesGUIDReveal {
         //
         // Confirmed end-to-end on macOS 26.5 against the user's real chat.db.
         if sendSpotlightOpenURL(messageGUID: messageGUID) {
+            // The GURL Apple Event makes Messages load + highlight the message
+            // but does NOT bring the app forward — with another app focused,
+            // the reveal happened invisibly behind it. Activate explicitly.
+            _ = MessagesReveal.openMessagesApp()
             return .scrolledToMessage(viaHighlight: true)
         }
 

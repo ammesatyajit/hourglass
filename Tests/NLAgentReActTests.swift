@@ -226,6 +226,211 @@ final class NLAgentReActTests: XCTestCase {
         XCTAssertThrowsError(try NLToolCallParser.parse("not JSON"))
     }
 
+    // MARK: - Evidence indices (adaptive-synthesis pass)
+
+    func testToolCallParser_decodesEvidenceIndices() throws {
+        let raw = #"{"answer":"They planned dinner.","hero_index":3,"evidence_indices":[0,3,7]}"#
+        let dec = try NLToolCallParser.parse(raw)
+        guard case .final(let final) = dec else { return XCTFail("expected final") }
+        XCTAssertEqual(final.heroIndex, 3)
+        XCTAssertEqual(final.evidenceIndices, [0, 3, 7])
+    }
+
+    func testToolCallParser_evidenceIndices_tolerantOfStringsAndScalar() throws {
+        // Array of numeric strings.
+        let strArr = try NLToolCallParser.parse(#"{"answer":"a","hero_index":null,"evidence_indices":["1","4"]}"#)
+        guard case .final(let f1) = strArr else { return XCTFail("expected final") }
+        XCTAssertEqual(f1.evidenceIndices, [1, 4])
+        // Single scalar.
+        let scalar = try NLToolCallParser.parse(#"{"answer":"a","hero_index":null,"evidence_indices":2}"#)
+        guard case .final(let f2) = scalar else { return XCTFail("expected final") }
+        XCTAssertEqual(f2.evidenceIndices, [2])
+        // Absent → empty, not nil/crash.
+        let absent = try NLToolCallParser.parse(#"{"answer":"a","hero_index":null}"#)
+        guard case .final(let f3) = absent else { return XCTFail("expected final") }
+        XCTAssertEqual(f3.evidenceIndices, [])
+    }
+
+    /// The model cites evidence [3, 0, 7] from a 9-result search. The
+    /// returned candidates must lead with those three (in that order) so
+    /// the answer view's "hero + next 4" surfaces the cited messages.
+    func testReAct_evidenceIndices_reorderCandidatesAsEvidence() async {
+        let tools = MockTools()
+        let results = (0..<9).map { i in
+            makeResult(id: Int64(100 + i), guid: "m\(i)", body: "msg \(i)", sender: "Mom")
+        }
+        tools.state.withLock { $0.cannedSearch = results }
+        let runtime = ScriptedRuntime(outputs: [
+            #"{"tool":"search","args":{"query":"with:\"Mom\" thanksgiving|turkey|holiday","in":"all_time","limit":40}}"#,
+            #"{"answer":"You planned Thanksgiving — she set dinner at 4 and asked for pie.","hero_index":3,"evidence_indices":[3,0,7]}"#,
+        ])
+        let agent = NLAgent(runtime: runtime, tools: tools)
+        let result = await agent.answerWithToolLoop(userQuery: "what did Mom say about thanksgiving")
+
+        // Hero is the first cited index.
+        XCTAssertEqual(result.hero?.message.guid, "m3")
+        // Candidates lead with the cited evidence in the model's order,
+        // then the remaining messages follow.
+        let leadGUIDs = result.candidates.prefix(3).map { $0.message.guid }
+        XCTAssertEqual(leadGUIDs, ["m3", "m0", "m7"])
+        // Nothing dropped: all 9 still present, deduped.
+        XCTAssertEqual(result.candidates.count, 9)
+        XCTAssertEqual(Set(result.candidates.map { $0.message.guid }).count, 9)
+    }
+
+    // MARK: - Adaptive breadth hint
+
+    func testBreadthHint_zero_saysTooNarrowBroaden() {
+        let hint = NLAgent.breadthHint(count: 0, shown: 0)
+        XCTAssertTrue(hint.contains("TOO NARROW"))
+        XCTAssertTrue(hint.lowercased().contains("broaden"))
+    }
+
+    func testBreadthHint_huge_saysTooBroadNarrow() {
+        let hint = NLAgent.breadthHint(count: 340, shown: 18)
+        XCTAssertTrue(hint.contains("TOO BROAD"))
+        XCTAssertTrue(hint.contains("NARROW"))
+    }
+
+    func testBreadthHint_healthy_saysGoodRange() {
+        let hint = NLAgent.breadthHint(count: 12, shown: 12)
+        XCTAssertTrue(hint.contains("Good range"))
+    }
+
+    func testBreadthHint_healthy_withOverflow_mentionsRemainder() {
+        let hint = NLAgent.breadthHint(count: 60, shown: 18)
+        XCTAssertTrue(hint.contains("42 more"))
+    }
+
+    // MARK: - Qwen3 think-block stripping
+
+    func testStripThinkBlocks_removesClosedBlockAndParses() throws {
+        let raw = "<think>I should look up the top contacts first.</think>{\"tool\":\"topContacts\",\"args\":{\"limit\":5}}"
+        let dec = try NLToolCallParser.parse(raw)
+        guard case .tool(let call) = dec else { return XCTFail("expected tool") }
+        XCTAssertEqual(call.tool, "topContacts")
+    }
+
+    func testStripThinkBlocks_removesUnclosedTrailingBlock() {
+        // A think block with a stray brace inside, truncated (no closing
+        // tag) — must not leave JSON for the scanner.
+        let raw = "{\"answer\":\"done\",\"hero_index\":null}<think>now I wonder if {x"
+        let stripped = NLToolCallParser.stripThinkBlocks(raw)
+        XCTAssertFalse(stripped.contains("<think>"))
+        XCTAssertTrue(stripped.contains("\"answer\""))
+    }
+
+    func testStripThinkBlocks_thinkBeforeJSON_doesNotLeakBraces() throws {
+        // The exact failure shape: reasoning prose containing { } then the
+        // real call. Stripping must yield the real tool call, not a partial.
+        let raw = "<think>maybe i call {\"tool\":\"wrong\"}</think>\n{\"answer\":\"You texted Sarah most.\",\"hero_index\":null,\"evidence_indices\":[]}"
+        let dec = try NLToolCallParser.parse(raw)
+        guard case .final(let f) = dec else { return XCTFail("expected final") }
+        XCTAssertEqual(f.answer, "You texted Sarah most.")
+    }
+
+    // MARK: - Duplicate-call hardening + honest degradation (Codex #2.1/#2.2)
+
+    /// The model loops the SAME tool call and NEVER answers (even when forced).
+    /// New contract (Codex #2): on a duplicate call we force a final-answer-only
+    /// turn; if the model STILL refuses to answer, the synthesis fallback turns
+    /// the gathered topContacts data into a usable answer — but that answer is
+    /// flagged `degradedToFallback == true` (HONEST: the MODEL never produced
+    /// it). The loop must stop quickly (not burn all 8 iterations). This is the
+    /// "who did I text the most" ×8 failure, now handled honestly.
+    func testReAct_duplicateCall_forcesFinalThenSynthesizesHonestly() async {
+        let tools = MockTools()
+        let contacts = [
+            makeContactStat("Sarah", sent: 623, received: 617),
+            makeContactStat("Mom", sent: 200, received: 180),
+        ]
+        tools.state.withLock { $0.cannedTopContacts = contacts }
+        // Model emits the SAME topContacts call forever, never a final answer —
+        // not even on the forced final-answer turn.
+        let identical = #"{"tool":"topContacts","args":{"in":"2026-01-01..2026-12-31","limit":5}}"#
+        let runtime = ScriptedRuntime(outputs: Array(repeating: identical, count: 8))
+        let agent = NLAgent(runtime: runtime, tools: tools)
+        let result = await agent.answerWithToolLoop(userQuery: "who did i text the most this year")
+
+        // turn1: exec topContacts. turn2: duplicate → force-final, continue.
+        // turn3: forced final-answer turn (still a tool call) → stop. ≤3 calls.
+        XCTAssertLessThanOrEqual(runtime.callCount, 3,
+            "duplicate-call hardening should force a final-answer turn then stop, not loop to the cap (got \(runtime.callCount))")
+        // Synthesis still produces a usable answer from gathered data…
+        XCTAssertNotNil(result.explanation)
+        XCTAssertTrue(result.explanation?.contains("Sarah") ?? false,
+            "synthesized answer should name the top contact — got: \(result.explanation ?? "nil")")
+        // …but it is HONESTLY flagged degraded, because the model never emitted
+        // a real final answer (Codex #2.2 — the old code lied with false here).
+        XCTAssertTrue(result.degradedToFallback,
+            "a synthesized fallback answer must report degradedToFallback == true (model never answered)")
+    }
+
+    /// On a duplicate call we force a final-answer-only turn. When the model
+    /// ACTUALLY answers on that forced turn, the result is NOT degraded (the
+    /// model produced a real answer) — and we stop without burning iterations.
+    func testReAct_duplicateCall_forcedTurnAnswers_notDegraded() async {
+        let tools = MockTools()
+        let sarah = makeContactStat("Sarah", sent: 10, received: 10)
+        tools.state.withLock {
+            $0.cannedTopContacts = [sarah]
+        }
+        let dup = #"{"tool":"topContacts","args":{"limit":5}}"#
+        let runtime = ScriptedRuntime(outputs: [
+            dup,   // turn 1: execute topContacts
+            dup,   // turn 2: duplicate → force final-answer-only turn
+            // turn 3 (forced): the model answers properly this time.
+            #"{"answer":"You texted Sarah the most.","hero_index":null,"evidence_indices":[]}"#,
+        ])
+        let agent = NLAgent(runtime: runtime, tools: tools)
+        let result = await agent.answerWithToolLoop(userQuery: "who did i text the most")
+
+        XCTAssertEqual(runtime.callCount, 3,
+            "should run: exec, duplicate-detect, forced answer")
+        XCTAssertEqual(result.explanation, "You texted Sarah the most.")
+        XCTAssertFalse(result.degradedToFallback,
+            "model answered on the forced turn → not degraded")
+    }
+
+    /// The answer-after-N-reads cap (Codex #2.4): a model that keeps READING
+    /// (search/readMessages) past the cap without answering is forced to answer.
+    func testReAct_readCap_forcesFinalAnswer() async {
+        let tools = MockTools()
+        // Distinct search calls so the duplicate breaker does NOT fire — we want
+        // the READ-CAP to be what forces the final answer.
+        let runtime = ScriptedRuntime(outputs: [
+            #"{"tool":"search","args":{"query":"a","limit":10}}"#,
+            #"{"tool":"search","args":{"query":"b","limit":10}}"#,
+            #"{"tool":"search","args":{"query":"c","limit":10}}"#,  // 3rd read → hits cap
+            // turn 4 is the forced final-answer turn; model answers.
+            #"{"answer":"Here is the answer.","hero_index":null,"evidence_indices":[]}"#,
+        ])
+        let agent = NLAgent(runtime: runtime, tools: tools)
+        let result = await agent.answerWithToolLoop(userQuery: "search a lot")
+
+        // 3 reads + 1 forced answer = 4 calls; must not run to the cap of 8.
+        XCTAssertEqual(runtime.callCount, 4,
+            "after 3 reads the loop should force the final-answer turn (got \(runtime.callCount))")
+        XCTAssertEqual(result.explanation, "Here is the answer.")
+        XCTAssertFalse(result.degradedToFallback)
+    }
+
+    func testSynthesizeFallback_topContacts() {
+        let contacts = [
+            makeContactStat("Sarah", sent: 600, received: 600),
+            makeContactStat("Mom", sent: 100, received: 100),
+        ]
+        let ans = NLAgent.synthesizeFallbackAnswer(contacts: contacts, candidates: [])
+        XCTAssertNotNil(ans)
+        XCTAssertTrue(ans!.answer.contains("Sarah"))
+        XCTAssertTrue(ans!.answer.contains("1200"))
+        XCTAssertEqual(ans!.contactIndex, 0)
+    }
+
+    func testSynthesizeFallback_emptyData_returnsNil() {
+        XCTAssertNil(NLAgent.synthesizeFallbackAnswer(contacts: [], candidates: []))
+    }
+
     // MARK: - Date arg resolution
 
     func testResolveDateArg_acceptsTimeWindowVocabulary() {
@@ -523,14 +728,17 @@ final class NLAgentReActTests: XCTestCase {
                       "the sender name must be in the observation")
     }
 
-    /// Iteration cap is now 8 (was 5). Verify the default kicks in.
+    /// Iteration cap is 8. Verify the default kicks in. NOTE: the calls
+    /// must be DISTINCT — the repeat-call breaker (added 2026-06-02) stops
+    /// the loop the moment it sees two identical calls back-to-back, so a
+    /// constant-call stream would halt at 2. We vary `limit` per turn so
+    /// every signature differs and the loop runs to the real cap.
     func testReAct_defaultIterationCap_is8() async {
         let tools = MockTools()
-        // The model never emits a final answer.
-        let runtime = ScriptedRuntime(outputs: Array(
-            repeating: #"{"tool":"topContacts","args":{"limit":1}}"#,
-            count: 20
-        ))
+        // 20 DISTINCT tool calls, none a final answer. Distinct args dodge
+        // the repeat-breaker so the iteration cap is what bounds the loop.
+        let outputs = (1...20).map { #"{"tool":"topContacts","args":{"limit":\#($0)}}"# }
+        let runtime = ScriptedRuntime(outputs: outputs)
         let agent = NLAgent(runtime: runtime, tools: tools)
         _ = await agent.answerWithToolLoop(userQuery: "loop forever?")
         XCTAssertEqual(runtime.callCount, 8, "default maxIterations is now 8")

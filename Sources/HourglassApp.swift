@@ -176,6 +176,17 @@ private struct SettingsView: View {
 }
 
 private struct GeneralSettingsPane: View {
+    /// Persisted NL "quality mode". Backed by the same UserDefaults key
+    /// `NLModelPreference` reads at `ModelDownloader` construction. Writing it
+    /// here posts `UserDefaults.didChangeNotification`, which `AppDelegate`
+    /// observes to rebuild the downloader against the newly-selected model.
+    @AppStorage(NLModelPreference.defaultsKey) private var qualityRaw: String =
+        NLModelQuality.standard.rawValue
+
+    private var quality: NLModelQuality {
+        NLModelQuality(rawValue: qualityRaw) ?? .standard
+    }
+
     var body: some View {
         Form {
             Section {
@@ -187,10 +198,25 @@ private struct GeneralSettingsPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                Picker("Answer quality:", selection: $qualityRaw) {
+                    ForEach(NLModelQuality.allCases) { mode in
+                        Text("\(mode.settingsTitle) — \(mode.displayLabel) (\(mode.approxDownloadLabel))")
+                            .tag(mode.rawValue)
+                    }
+                }
+            } header: {
+                Text("Natural-language search")
+            } footer: {
+                Text("Standard runs Qwen3 4B — fast and accurate for most questions. High runs Qwen2.5 7B Instruct for tougher questions, at a larger download and more memory. Switching modes downloads the new model the next time you ask a question.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(height: 200)
+        .frame(height: 320)
     }
 }
 

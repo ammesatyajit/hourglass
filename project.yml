@@ -10,11 +10,21 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.2.1"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "5"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Apple-Silicon-only product (see CLAUDE.md: "The app floor is macOS 15,
+    # Apple Silicon (arm64)"). Pin ARCHS to arm64 so xcodebuild does NOT also
+    # try to produce an x86_64 slice. This is required now that we vendor the
+    # arm64-only `cactus-macos.xcframework` (the Cactus on-device LLM engine):
+    # an x86_64 link leg has no Cactus binary to link against and fails. It is
+    # also correct on the merits — we never shipped a working Intel build and
+    # the whole stack (MLX/Metal, Cactus) targets Apple Silicon. Drop or widen
+    # this only if an Intel target is ever genuinely needed.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
 
 packages:
   GRDB:
@@ -145,6 +155,33 @@ targets:
       # placeholder appcast URL + public EdDSA key + sign_update flow.
       - package: Sparkle
         product: Sparkle
+      # ----- Cactus on-device LLM engine (OPT-IN, default OFF) -----------
+      # Vendored macOS (arm64) xcframework built from the local cactus repo
+      # at the **v1.14 release commit (40a7123b)** — the last release whose
+      # engine loads the flat CQ weights on disk directly (current cactus
+      # main is v2.0 and requires `cactus convert` transpiled bundles, which
+      # we don't have). The v2.0 build remains vendored side-by-side at
+      # `Vendor/cactus-macos.xcframework` for when transpiled models exist;
+      # both expose the same `cactus` module + identical FFI, so only ONE can
+      # be linked at a time. Built via a macos-only variant of apple/build.sh
+      # (see plans.md 2026-06-09 build-agent entry).
+      #
+      # It is a DYNAMIC framework (`com.cactuscompute.cactus`, install_name
+      # `@rpath/cactus.framework/...`), so it MUST be embedded AND signed
+      # consistently with the app or dyld SIGABRTs at launch on a Team-ID
+      # mismatch — the same failure mode we hit historically with Sparkle.
+      # scripts/build.sh's post-build `codesign --force --deep` re-signs the
+      # embedded framework with the app's stable identity, satisfying that.
+      #
+      # The framework exposes the `cactus` clang module (umbrella header
+      # `cactus_ffi.h` + an injected `Modules/module.modulemap`), imported
+      # by `Sources/NL/CactusRuntime.swift` as `import cactus`. Linking is
+      # weak/opt-in at the *runtime* level: CactusRuntime only loads a model
+      # when `defaults write com.satyajit.hourglass nl.runtime.cactus -bool
+      # true` is set; the default NL runtime stays MLX.
+      - framework: Vendor/cactus-v114-macos.xcframework
+        embed: true
+        codeSign: true
     settings:
       base:
         # Bundle id is `com.satyajit.hourglass` — the project's canonical

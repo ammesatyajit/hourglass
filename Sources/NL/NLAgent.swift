@@ -138,6 +138,16 @@ public final class NLAgent: Sendable {
         maxCandidates: Int = 50
     ) async -> NLQueryResult {
 
+        // DETERMINISTIC FAST PATH — same as the ReAct loop. A question scoped
+        // to a real person (+ optional timeframe) is resolved to the 1:1 and
+        // answered with ONE read-and-summarize call, BEFORE the plan-JSON
+        // planner runs. Returns nil (→ normal planner path below) when it
+        // doesn't apply. See `ScopedPersonQuery`.
+        if let scoped = await answerScopedPersonQuestion(userQuery: userQuery, now: now) {
+            nlAgentLogger.info("planner: handled by deterministic scoped-person path (degraded=\(scoped.degradedToFallback, privacy: .public))")
+            return scoped
+        }
+
         var trace: [NLTraceStep] = []
         let startAll = Date()
 
@@ -150,6 +160,18 @@ public final class NLAgent: Sendable {
         var rawLLMOutput: String? = nil
         var lastParseError: String? = nil
         nlAgentLogger.info("planner: query=\"\(userQuery, privacy: .public)\"")
+
+        // NOTE: an earlier pass short-circuited `runtime is StubLLMRuntime`
+        // straight to the rule-based fallback here, to stop the stub's
+        // literal-text plan from producing garbage in production. That's
+        // now handled ONE LEVEL UP: `NLSearchViewModel.ask()` hard-blocks
+        // on a stub runtime (shows "loading model" and stashes the query
+        // until MLX swaps in). So in production `answer()` is never invoked
+        // with a stub. Removing the skip here restores the stub as a
+        // deterministic CANNED-PLAN test fixture (NLAgentTests) while the
+        // genuine `plan == nil` fallback below still covers real planner
+        // parse failures on the MLX path. The rule-based fallback's
+        // centered-window retry is reached via that genuine path.
         do {
             // Attempt 1: standard prompt.
             let raw = try await runtime.respond(
@@ -392,7 +414,8 @@ public final class NLAgent: Sendable {
         )
         trace.append(step)
 
-        let candidates: [MessageSearch.Result]
+        var candidates: [MessageSearch.Result]
+        var resolvedFallbackQuery = fallbackQuery
         do {
             candidates = try await tools.search(
                 query: fallbackQuery,
@@ -417,6 +440,92 @@ public final class NLAgent: Sendable {
             )
         }
 
+        // RETRY without concept: investigative queries like "find my
+        // argument with Annika" produce concept="argument", but the
+        // actual conversation rarely contains that literal word — the
+        // user infers "argument" from tone. If we got 0 hits AND we
+        // have a structural anchor (person + date), strip the concept
+        // and return chronological. The user gets the conversation in
+        // the right window and can spot the argument themselves. This
+        // is what the ReAct loop's `readMessages` tool does when MLX
+        // is available; we're emulating it on the rule-based path so
+        // the answer isn't empty just because no message contains the
+        // literal "argument".
+        // True when this retry will return a chronological dump centered
+        // on a target date — we treat that as "no single hero, here are
+        // the messages around that time, you tell me which is the
+        // argument start." Set inside the retry block when it fires.
+        var retryWasChronologicalDump = false
+        if candidates.isEmpty, built.person != nil, built.dateOperator != nil {
+            var parts: [String] = []
+            if let person = built.person {
+                // Use `in:"NAME"` for 1:1 scope — same operator as
+                // `readMessages` (Tools.swift). Picks up the actual
+                // direct conversation rather than every group the
+                // person is in.
+                parts.append("in:\"\(person)\"")
+            }
+            // CENTER the window for "N units ago" phrasing instead of
+            // using `last:Nd` (which is from-today). For a 3-weeks-ago
+            // argument the user wants results CENTERED on May 6, not
+            // the most recent ~31 days of chatter that happen to
+            // dominate a high-volume 1:1.
+            //
+            // ±2 days is the right compromise for high-volume 1:1s
+            // (the failure case that motivated this fix): ±5 days
+            // gave 80 messages but DESC limit 50 left only the
+            // newest day. ±2 days produces ~5 days of conversation
+            // (~500–1000 messages for a heavy chatter) — ASC ordered
+            // with a higher limit so the EARLIEST messages in the
+            // window come first, which is where an "argument start"
+            // would be visible. The chronological-dump-from-around-
+            // the-target shape mirrors what `readMessages` does on
+            // the ReAct path (Tools.swift).
+            if let window = Self.extractCenteredWindow(fromQuery: userQuery, now: now, padDays: 2) {
+                parts.append("after:\(Self.isoDate(window.lower))")
+                parts.append("before:\(Self.isoDate(window.upper))")
+            } else if let date = built.dateOperator {
+                parts.append(date)
+            }
+            let retryQuery = parts.joined(separator: " ")
+            nlAgentLogger.info("fallback: 0 hits with concept; retrying without concept (ASC, limit 200) → \"\(retryQuery, privacy: .public)\"")
+            do {
+                let retried = try await tools.search(
+                    query: retryQuery,
+                    dateRange: nil,
+                    limit: 200,
+                    order: .ascending
+                )
+                if !retried.isEmpty {
+                    // Resort by PROXIMITY TO TARGET. The window is wide
+                    // enough that just "newest first" or "oldest first"
+                    // can bury the target date in surrounding chatter
+                    // (Annika 1:1 has 607 messages on May 6 alone; either
+                    // boundary order pushes May 5 22:08 far down the
+                    // list). Sorting by `|date - target|` puts the
+                    // messages right at the target date first, which is
+                    // what "around N weeks ago" actually means.
+                    let target: Date
+                    if let window = Self.extractCenteredWindow(fromQuery: userQuery, now: now, padDays: 0) {
+                        // padDays=0 → lower == upper == target.
+                        target = window.lower
+                    } else {
+                        target = now
+                    }
+                    candidates = retried.sorted { a, b in
+                        let dA = abs(a.message.date.timeIntervalSince(target))
+                        let dB = abs(b.message.date.timeIntervalSince(target))
+                        return dA < dB
+                    }
+                    resolvedFallbackQuery = retryQuery
+                    retryWasChronologicalDump = true
+                }
+            } catch {
+                // Swallow — we already have an "empty fallback" path
+                // below. The retry is opportunistic.
+            }
+        }
+
         trace[trace.count - 1] = NLTraceStep(
             id: step.id,
             phase: .searching,
@@ -435,18 +544,71 @@ public final class NLAgent: Sendable {
             ? "I couldn't parse the natural-language query precisely; ran it as a keyword search."
             : "Couldn't reach the model — " + explanationParts.joined(separator: ", ") + "."
 
+        // Hero = candidates.first. On chronological-dump retries the
+        // list is sorted by proximity-to-target, so candidates.first is
+        // the message closest to the user's "N units ago" reference —
+        // typically a substantive message inside the cluster they're
+        // asking about. Not guaranteed to be the literal "argument
+        // start" but it's the right anchor for the eye.
+        _ = retryWasChronologicalDump
+        let hero: MessageSearch.Result? = candidates.first
+
         return NLQueryResult(
-            hero: candidates.first,
+            hero: hero,
             candidates: candidates,
             trace: trace,
             plan: nil,
-            fallbackQuery: fallbackQuery,
+            fallbackQuery: resolvedFallbackQuery,
             explanation: explanation,
             degradedToFallback: true
         )
     }
 
     // MARK: - Helpers
+
+    /// Extract a CENTERED date window for "N units ago" / "N units back"
+    /// phrasing in the user query. Returns `nil` if no such phrase is
+    /// present (caller falls back to whatever date operator the rule
+    /// builder produced).
+    ///
+    /// The window is `target ± padDays` where `target = now - N units`.
+    /// Pass `padDays = 2` for high-volume 1:1s where ±5 produces too
+    /// many messages to scan in a single result list.
+    static func extractCenteredWindow(
+        fromQuery query: String,
+        now: Date,
+        padDays: Int = 5
+    ) -> (lower: Date, upper: Date)? {
+        let pattern = #"(?i)(?:about|around|maybe|approximately|roughly)?\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(day|week|month|year)s?\s+(?:ago|back)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsRange = NSRange(query.startIndex..., in: query)
+        guard let m = regex.firstMatch(in: query, range: nsRange),
+              m.numberOfRanges >= 3,
+              let nRange = Range(m.range(at: 1), in: query),
+              let unitRange = Range(m.range(at: 2), in: query)
+        else { return nil }
+
+        let nStr = String(query[nRange]).lowercased()
+        let unit = String(query[unitRange]).lowercased()
+        let n = RuleBasedQueryBuilder.wordToInt(nStr) ?? Int(nStr) ?? 1
+        let totalDays = RuleBasedQueryBuilder.daysFor(n: n, unit: unit)
+        let cal = Calendar.current
+        guard let target = cal.date(byAdding: .day, value: -totalDays, to: now),
+              let lower = cal.date(byAdding: .day, value: -padDays, to: target),
+              let upper = cal.date(byAdding: .day, value: +padDays, to: target)
+        else { return nil }
+        return (lower, upper)
+    }
+
+    /// `YYYY-MM-DD` in the user's local calendar — the format `before:` /
+    /// `after:` operators in `MessageSearch.search` accept.
+    static func isoDate(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale = Locale(identifier: "en_US_POSIX")
+        return df.string(from: date)
+    }
 
     /// Pick the hero from the candidate list according to `plan.intent`.
     /// Returns (hero, explanation). Explanation is non-nil when the choice

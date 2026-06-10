@@ -180,6 +180,38 @@ public protocol NLAgentTools: Sendable {
         sql: String,
         limit: Int
     ) async throws -> [[String: String]]
+
+    // MARK: - Person → 1:1 chat resolution (deterministic scoped path)
+
+    /// Resolve a person phrase ("Annika", "annika renganathan") to their
+    /// DIRECT conversation. The contract — and the whole point of this method
+    /// existing — is that a GROUP chat is NEVER chosen merely because its
+    /// `display_name` contains the person's name. The "Annika effect" group
+    /// (chat 1532) must NOT win over the Annika 1:1 (chat 1212).
+    ///
+    /// Resolution order:
+    ///   1. Resolve the phrase → contact handle(s) via the AddressBook, plus
+    ///      a raw-handle substring fallback for contacts not in AddressBook.
+    ///   2. Find 1:1 chats (`chat.style = 45`) whose participant is one of
+    ///      those handles. Prefer these — return them with `isOneToOne = true`.
+    ///   3. ONLY if there is genuinely no 1:1, fall back to group chats the
+    ///      person is a member of, returned with `isOneToOne = false`.
+    ///
+    /// Returns nil when the phrase resolves to nothing at all (no contact, no
+    /// handle match, no chat) — the caller then bails out of the deterministic
+    /// path and lets the normal agent run.
+    func resolveScopedPersonChat(named phrase: String) async throws -> ScopedPersonChat?
+
+    /// Read a chronological window of messages from EXACTLY the given chat
+    /// ROWID(s) (no name/operator round-trip — the IDs are authoritative).
+    /// Used by the deterministic scoped-person path after
+    /// `resolveScopedPersonChat`. Decoded via the real `AttributedBodyDecoder`,
+    /// oldest → newest, capped at `limit`.
+    func readMessagesInChats(
+        rowIDs: [Int64],
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [MessageSearch.Result]
 }
 
 public extension NLAgentTools {
@@ -228,6 +260,19 @@ public extension NLAgentTools {
         return results.reversed()
     }
     func rawSearchSQL(sql: String, limit: Int) async throws -> [[String: String]] { [] }
+
+    /// Default: no resolution. The production `MessageSearchTools` overrides
+    /// this with the real AddressBook + chat.db lookup. Mocks that exercise
+    /// the deterministic path can override directly.
+    func resolveScopedPersonChat(named phrase: String) async throws -> ScopedPersonChat? { nil }
+
+    /// Default delegates to `readMessages`-style behaviour via `search`. The
+    /// production impl reads the chat ROWID(s) directly. Mocks override.
+    func readMessagesInChats(
+        rowIDs: [Int64],
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [MessageSearch.Result] { [] }
 }
 
 // MARK: - Production impl
@@ -539,11 +584,26 @@ public struct MessageSearchTools: NLAgentTools {
         query: String,
         in dateRange: ClosedRange<Date>?
     ) async throws -> Int {
-        // We could push COUNT(*) into SQL, but the existing search
-        // pipeline already applies the body refinement (PhraseQuery AST)
-        // which SQL alone cannot replicate. So we run the regular search
-        // and count the returned set. This stays under sub-second for
-        // any reasonable query on the user's DB.
+        // Perf Pass C (Codex #4 step ②): push a true SQL/FTS `COUNT(*)` down
+        // when the query is a FILTER-ONLY shape (no free-text needle), so we
+        // don't materialize and body-decode every matching row just to count
+        // it. The engine's `aggregateCount` returns `nil` when the query needs
+        // the Swift-side body refinement (any free-text needle, a person
+        // filter, regex) — in which case we MUST fall back to the materialized
+        // search to keep the count byte-for-byte identical to the old behavior.
+        //
+        // Route through the SAME engine `search()` would pick (FTS when fresh,
+        // INSTR otherwise) so the count agrees with what a real search returns.
+        if shouldUseFTS(), let fts {
+            if let n = try fts.aggregateCount(phrase: query, dateRange: dateRange) {
+                return n
+            }
+        } else {
+            if let n = try instr.aggregateCount(phrase: query, dateRange: dateRange) {
+                return n
+            }
+        }
+        // Not aggregable in SQL — fall back to the exhaustive search + count.
         let results = try await search(query: query, dateRange: dateRange, limit: nil)
         return results.count
     }
@@ -552,9 +612,40 @@ public struct MessageSearchTools: NLAgentTools {
         query: String,
         in dateRange: ClosedRange<Date>?
     ) async throws -> MessageSearch.Result? {
+        // Perf Pass C (Codex #4 step ②): for a FILTER-ONLY query (no free-text
+        // needle) the SQL can `ORDER BY date ASC LIMIT 1` and return the single
+        // oldest row — no need to materialize and body-decode the entire match
+        // set just to take its tail. We detect that shape with the same gate
+        // `aggregateCount` uses; the resulting Result is byte-identical because
+        // the row→Result mapping (incl. batched reactions/type splicing) is the
+        // same regardless of sort order or limit.
+        //
+        // For any query that needs Swift-side body refinement, an `ORDER BY ASC
+        // LIMIT 1` is UNSAFE: the SQL-oldest candidate could be refined away,
+        // which would wrongly return nil (or a too-late row). So gate strictly,
+        // and otherwise keep the exact old behavior (DESC, unlimited, take last).
+        if isFilterOnly(query: query) {
+            // Filter-only → the oldest SQL row is the true oldest match.
+            return try await search(query: query, dateRange: dateRange, limit: 1,
+                                    order: .ascending).first
+        }
         let results = try await search(query: query, dateRange: dateRange, limit: nil)
         // `search` returns DESC (newest first); oldest is the tail.
         return results.last
+    }
+
+    /// True iff `query` parses to a filter-only shape — no free-text phrase
+    /// needle — so SQL/FTS aggregates (`COUNT(*)`, `ORDER BY ASC LIMIT 1`) are
+    /// byte-for-byte equivalent to the materialized `search` path (which only
+    /// applies its Swift body refinement when the phrase AST is non-empty). An
+    /// unparseable phrase (e.g. invalid regex) is treated as NOT filter-only so
+    /// we keep the materialized path that surfaces the error identically.
+    private func isFilterOnly(query: String) -> Bool {
+        let parsed = MessageSearch.parseQuery(query, contacts: instr.contacts)
+        guard let ast = try? PhraseQuery.parse(parsed.freeText, caseSensitive: false) else {
+            return false
+        }
+        return ast.isEmpty
     }
 
     public func messagesAroundTime(
@@ -694,11 +785,21 @@ public struct MessageSearchTools: NLAgentTools {
         return orderedBefore + resAfter
     }
 
-    /// Production impl of `readMessages`. Delegates to `search()` with a
-    /// `with:NAME` operator (when `personName != nil`) and then reverses
+    /// Production impl of `readMessages`. Delegates to `search()` with an
+    /// `in:"NAME"` operator (when `personName != nil`) and then reverses
     /// the result list to chronological order. This is the "let the model
     /// scan the convo" tool the iterative ReAct loop uses to decide where
     /// to zoom in.
+    ///
+    /// **Why `in:` and not `with:`:** investigative NL queries ("find my
+    /// argument with Annika") almost always refer to the 1:1 conversation
+    /// with that person, not group chats that person is incidentally in.
+    /// `with:NAME` (matches 1:1 OR groups) was returning argument-shaped
+    /// messages from unrelated group chats — "Yacht Party Planning" hits
+    /// when the user wanted the direct chat. `in:"NAME"` scopes to (a) the
+    /// 1:1 chat with that person OR (b) any chat literally named NAME
+    /// (rare — usually the 1:1). The agent can still fall through to the
+    /// broader `with:` scope via the `search` tool if 1:1 returns nothing.
     public func readMessages(
         in dateRange: ClosedRange<Date>?,
         with personName: String?,
@@ -707,10 +808,11 @@ public struct MessageSearchTools: NLAgentTools {
         let safeLimit = max(1, min(limit, 100))
         var parts: [String] = []
         if let name = personName, !name.isEmpty {
-            let needsQuotes = name.contains(" ") || name.contains("\"")
             let escaped = name.replacingOccurrences(of: "\"", with: "\\\"")
-            let token = needsQuotes ? "with:\"\(escaped)\"" : "with:\(name)"
-            parts.append(token)
+            // Always quote — `in:` values often contain spaces (display
+            // names like "Annika Renganathan"). Unquoted multi-word values
+            // tokenize wrong and the operator silently misses.
+            parts.append("in:\"\(escaped)\"")
         }
         let query = parts.joined(separator: " ")
         // Pass `.ascending` so SQL returns the OLDEST N rows in the
@@ -726,6 +828,230 @@ public struct MessageSearchTools: NLAgentTools {
             limit: safeLimit,
             order: .ascending
         )
+    }
+
+    /// Production person→1:1 resolver. This is the SOURCE-LEVEL fix for the
+    /// "group named after a person pollutes the scope" bug. Unlike
+    /// `in:"NAME"` (which ORs a `display_name LIKE '%NAME%'` branch that
+    /// matches the "Annika effect" GROUP), this resolver:
+    ///   1. resolves the phrase to handle(s) via the AddressBook (+ raw
+    ///      substring fallback),
+    ///   2. finds 1:1 chats (`ch.style = 45`) whose participant is one of
+    ///      those handles — a group can NEVER match here because of the
+    ///      style gate,
+    ///   3. ranks 1:1s by message volume (the real conversation, not a stale
+    ///      duplicate thread) and returns them with `isOneToOne = true`,
+    ///   4. only if there's NO 1:1, falls back to group chats the person is a
+    ///      member of (`isOneToOne = false`).
+    public func resolveScopedPersonChat(named phrase: String) async throws -> ScopedPersonChat? {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Resolve phrase → candidate handles via the SAME logic the search
+        // operators use (contact display-name match + raw/normalized handle
+        // substring + raw-filter fallback). Reused so resolution stays
+        // consistent across every path.
+        let resolved = MessageSearch.resolveHandles(forFilter: trimmed, contacts: instr.contacts)
+        guard !resolved.isEmpty else { return nil }
+
+        // Resolve to a canonical display name for the trace/prose: pick the
+        // contact whose display name best matches the phrase (longest exact
+        // contains), else echo the phrase.
+        let lowerPhrase = trimmed.lowercased()
+        let resolvedName: String = instr.contacts.allContacts
+            .filter { $0.displayName.lowercased().contains(lowerPhrase) }
+            .sorted { $0.displayName.count < $1.displayName.count }
+            .first?.displayName ?? trimmed
+
+        let chatDB = self.chatDB
+        let placeholders = Array(repeating: "?", count: resolved.count).joined(separator: ", ")
+
+        // 1:1s (style = 45) whose participant is one of the resolved handles.
+        // ROWID + message count so we prefer the real, active conversation.
+        // The style=45 gate is what excludes the "Annika effect" group by
+        // construction — no display_name branch anywhere in this query.
+        let oneToOneSQL = """
+            SELECT ch.ROWID AS chat_id,
+                   (SELECT COUNT(*) FROM chat_message_join cmj2
+                    JOIN message m2 ON m2.ROWID = cmj2.message_id
+                    WHERE cmj2.chat_id = ch.ROWID AND m2.associated_message_type = 0) AS msg_count
+            FROM chat ch
+            WHERE ch.style = 45
+              AND ch.ROWID IN (
+                  SELECT chj.chat_id
+                  FROM chat_handle_join chj
+                  JOIN handle ph ON ph.ROWID = chj.handle_id
+                  WHERE ph.id IN (\(placeholders))
+                     OR ph.id LIKE ?
+              )
+            ORDER BY msg_count DESC
+            """
+        var oneToOneArgs: [DatabaseValueConvertible] = resolved
+        oneToOneArgs.append("%\(trimmed)%")
+
+        let oneToOneIDs: [Int64] = try await Task.detached(priority: .userInitiated) {
+            try chatDB.dbQueue.read { db in
+                let rows = try Row.fetchAll(db, sql: oneToOneSQL, arguments: StatementArguments(oneToOneArgs))
+                return rows.map { ($0["chat_id"] as Int64) }
+            }
+        }.value
+
+        if !oneToOneIDs.isEmpty {
+            // Take the highest-volume 1:1 (and at most one more, in case the
+            // person has a phone-based AND an email-based 1:1 that never got
+            // merged — both are genuinely "the 1:1 with this person").
+            let picked = Array(oneToOneIDs.prefix(2))
+            return ScopedPersonChat(resolvedName: resolvedName, chatRowIDs: picked, isOneToOne: true)
+        }
+
+        // No 1:1 at all — documented fallback to group chats the person is in.
+        // (style != 45 so this never returns a 1:1; ordered by volume.)
+        let groupSQL = """
+            SELECT ch.ROWID AS chat_id,
+                   (SELECT COUNT(*) FROM chat_message_join cmj2
+                    JOIN message m2 ON m2.ROWID = cmj2.message_id
+                    WHERE cmj2.chat_id = ch.ROWID AND m2.associated_message_type = 0) AS msg_count
+            FROM chat ch
+            WHERE ch.style != 45
+              AND ch.ROWID IN (
+                  SELECT chj.chat_id
+                  FROM chat_handle_join chj
+                  JOIN handle ph ON ph.ROWID = chj.handle_id
+                  WHERE ph.id IN (\(placeholders))
+                     OR ph.id LIKE ?
+              )
+            ORDER BY msg_count DESC
+            LIMIT 3
+            """
+        var groupArgs: [DatabaseValueConvertible] = resolved
+        groupArgs.append("%\(trimmed)%")
+        let groupIDs: [Int64] = try await Task.detached(priority: .userInitiated) {
+            try chatDB.dbQueue.read { db in
+                let rows = try Row.fetchAll(db, sql: groupSQL, arguments: StatementArguments(groupArgs))
+                return rows.map { ($0["chat_id"] as Int64) }
+            }
+        }.value
+
+        guard !groupIDs.isEmpty else { return nil }
+        return ScopedPersonChat(resolvedName: resolvedName, chatRowIDs: groupIDs, isOneToOne: false)
+    }
+
+    /// Production reader: pull a chronological window from EXACT chat ROWID(s).
+    /// No operator round-trip — the IDs are authoritative (they came from
+    /// `resolveScopedPersonChat`). Decodes via the real `AttributedBodyDecoder`
+    /// and resolves sender names via the same `ResolvedContacts` the rest of
+    /// the app uses.
+    public func readMessagesInChats(
+        rowIDs: [Int64],
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [MessageSearch.Result] {
+        guard !rowIDs.isEmpty else { return [] }
+        let safeLimit = max(1, min(limit, 200))
+
+        // Build the chat-id IN clause + the dual-format date predicate (ns
+        // for modern rows, seconds for pre-10.13 — the plans.md gotcha).
+        let chatPlaceholders = Array(repeating: "?", count: rowIDs.count).joined(separator: ", ")
+        var whereArgs: [DatabaseValueConvertible] = rowIDs.map { $0 }
+        var dateClause = ""
+        if let range = dateRange {
+            let loNS = MessageDate.nanosecondsSinceMacEpoch(from: range.lowerBound)
+            let hiNS = MessageDate.nanosecondsSinceMacEpoch(from: range.upperBound)
+            let loS = MessageDate.secondsSinceMacEpoch(from: range.lowerBound)
+            let hiS = MessageDate.secondsSinceMacEpoch(from: range.upperBound)
+            dateClause = """
+                AND (
+                    (m.date > 1000000000000 AND m.date BETWEEN ? AND ?)
+                 OR (m.date <= 1000000000000 AND m.date BETWEEN ? AND ?)
+                )
+                """
+            whereArgs.append(loNS)
+            whereArgs.append(hiNS)
+            whereArgs.append(loS)
+            whereArgs.append(hiS)
+        }
+
+        // When a window is set we want the EARLIEST N in the window (so an
+        // argument's opening line is visible); when it's unbounded we want
+        // the most RECENT N (the latest of the conversation). Either way the
+        // returned list is finally sorted chronologically (oldest → newest).
+        let order = dateRange == nil ? "DESC" : "ASC"
+
+        let columnList = """
+            m.ROWID                   AS rowid,
+            m.guid                    AS guid,
+            m.date                    AS date,
+            m.is_from_me              AS is_from_me,
+            m.text                    AS text,
+            m.attributedBody          AS attributedBody,
+            m.associated_message_type AS associated_message_type,
+            h.id                      AS sender_handle,
+            cmj.chat_id               AS chat_id,
+            ch.style                  AS chat_style,
+            ch.display_name           AS chat_display_name,
+            ch.guid                   AS chat_guid
+            """
+        let sql = """
+            SELECT \(columnList)
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat ch ON ch.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON h.ROWID = m.handle_id
+            WHERE m.associated_message_type = 0
+              AND cmj.chat_id IN (\(chatPlaceholders))
+              \(dateClause)
+            ORDER BY m.date \(order)
+            LIMIT ?
+            """
+        whereArgs.append(safeLimit)
+
+        let chatDB = self.chatDB
+        let contacts = instr.contacts
+        let results: [MessageSearch.Result] = try await Task.detached(priority: .userInitiated) {
+            try chatDB.dbQueue.read { db in
+                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(whereArgs))
+                return rows.map { row -> MessageSearch.Result in
+                    let rawDate: Int64 = row["date"]
+                    let text: String? = row["text"]
+                    let blob: Data? = row["attributedBody"]
+                    let body = (text?.isEmpty == false) ? text! : AttributedBodyDecoder.decode(blob)
+                    let isFromMe = (row["is_from_me"] as Int? ?? 0) == 1
+                    let senderHandle: String? = row["sender_handle"]
+                    let chatDisplayName: String? = row["chat_display_name"]
+                    let chatStyle: Int? = row["chat_style"]
+                    let m = Message(
+                        id: row["rowid"],
+                        guid: row["guid"],
+                        date: MessageDate.date(fromRaw: rawDate),
+                        isFromMe: isFromMe,
+                        chatRowID: row["chat_id"],
+                        senderHandle: senderHandle,
+                        chatStyle: chatStyle,
+                        chatDisplayName: chatDisplayName,
+                        body: body,
+                        associatedMessageType: row["associated_message_type"] as Int? ?? 0
+                    )
+                    let partner: String
+                    if let dn = chatDisplayName, !dn.isEmpty { partner = dn }
+                    else if let raw = senderHandle { partner = contacts.name(forRawHandle: raw) }
+                    else { partner = "(unknown)" }
+                    let sender: String
+                    if isFromMe { sender = "You" }
+                    else if let raw = senderHandle { sender = contacts.name(forRawHandle: raw) }
+                    else { sender = "(unknown)" }
+                    return MessageSearch.Result(
+                        message: m,
+                        partnerName: partner,
+                        senderName: sender,
+                        chatGUID: row["chat_guid"]
+                    )
+                }
+            }
+        }.value
+
+        // Final chronological order (oldest → newest) regardless of the SQL
+        // direction we used to pick which N rows to keep.
+        return results.sorted { $0.message.date < $1.message.date }
     }
 
     /// Read-only SQL escape hatch. The LLM is instructed to NEVER call

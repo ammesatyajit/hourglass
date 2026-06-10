@@ -53,6 +53,15 @@ public protocol LLMRuntime: Sendable {
     /// A short, user-presentable name for the model running here. Shown in
     /// the trace footer ("This was generated locally. Powered by …").
     var modelLabel: String { get }
+
+    /// Release any transient compute resources held after a query finishes.
+    /// Called by the view model once a WHOLE NL query completes (not per
+    /// tool-call turn). For GPU-backed runtimes this frees the Metal buffer
+    /// cache so the GPU + unified memory return to a low-power idle instead
+    /// of holding a warm working set — the difference between an idle app
+    /// and one that keeps nibbling battery after the answer is on screen.
+    /// Default: no-op (the stub holds nothing).
+    func releaseResources() async
 }
 
 extension LLMRuntime {
@@ -65,6 +74,9 @@ extension LLMRuntime {
     ) async throws -> String {
         try await respond(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 256)
     }
+
+    /// Default: nothing to release.
+    public func releaseResources() async {}
 }
 
 // MARK: - Errors

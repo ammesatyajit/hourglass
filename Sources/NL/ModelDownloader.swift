@@ -113,6 +113,14 @@ public enum ModelDownloadState: Sendable, Equatable {
     /// user-presentable.
     case failed(reason: String)
 
+    /// True when in the `.failed` state — lets the UI swap a "Download"
+    /// CTA for a "Retry download" one without un-wrapping the associated
+    /// reason.
+    public var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
     public static func == (lhs: ModelDownloadState, rhs: ModelDownloadState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle): return true
@@ -160,10 +168,12 @@ public final class ModelDownloader {
 
     // MARK: - Configuration
 
-    /// The Hugging Face repo we download. Hardcoded — the design doc settled
-    /// on this model. If we ever want to flip models in production, this
-    /// becomes a Settings toggle. For now: do not change without re-running
-    /// the planner-quality benchmarks in `docs/nl-search-design.md` § Q1.
+    /// The Hugging Face repo we download. Defaults to the user's persisted
+    /// quality mode (`NLModelPreference.currentModelID` — Standard = Qwen3-4B-4bit,
+    /// High = Qwen2.5-7B-Instruct-4bit). This IS the Settings toggle now: a
+    /// fresh `ModelDownloader` reads the selected mode at construction. The
+    /// AppDelegate rebuilds the downloader when the user switches mode so the
+    /// new id takes effect (see `applyModelQualityChangeIfNeeded`).
     public let modelID: String
 
     // MARK: - Internal
@@ -176,7 +186,10 @@ public final class ModelDownloader {
     private var rateSamples: [(t: Date, bytes: Int64)] = []
     private let maxSamples = 10
 
-    public init(modelID: String = "mlx-community/gemma-4-e2b-it-4bit") {
+    /// `modelID` defaults to the persisted quality mode's repo id
+    /// (`NLModelPreference.currentModelID()` → Qwen3-4B-4bit when unset). The
+    /// explicit-arg form is kept for tests + the rebuild-on-mode-switch path.
+    public init(modelID: String = NLModelPreference.currentModelID()) {
         self.modelID = modelID
         // We DON'T flip state to `.ready` here even if the cache exists —
         // having the files on disk isn't the same as having the model

@@ -56,6 +56,18 @@ public final class ChatDatabase: @unchecked Sendable {
 
     /// Default location of the user's chat.db.
     public static var defaultURL: URL {
+        // TEST/BENCH SEAM (read-only): allow pointing the app at a copy of
+        // chat.db in an UNPROTECTED location via `HOURGLASS_CHATDB`. macOS TCC
+        // gates `~/Library/Messages` behind Full Disk Access, which is dropped
+        // whenever a dev rebuild changes the code signature — so a freshly-built
+        // GUI can't read the real DB without a manual re-grant. Pointing at a
+        // /tmp copy lets us exercise the real load + render pipeline (e.g. to
+        // measure scroll perf) without touching the user's FDA settings. The DB
+        // is opened read-only regardless; this only changes WHERE we read from.
+        if let override = ProcessInfo.processInfo.environment["HOURGLASS_CHATDB"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: false)
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appending(path: "Library/Messages/chat.db", directoryHint: .notDirectory)
     }

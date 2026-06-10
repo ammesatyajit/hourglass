@@ -581,39 +581,24 @@ struct SpotlightPanel: View {
         }
     }
 
+    /// The results list, wired through `SpotlightResultsList` — an
+    /// `Equatable`-conforming subview that skips its body re-evaluation
+    /// when only `selectedResultID` and the result-ID sequence are
+    /// stable. This removes the per-keystroke typing lag: previously
+    /// the parent's body re-rendered on every `viewModel.query`
+    /// change, dragging the 50-row list (avatars, formatted dates,
+    /// reaction clusters, attributedBody decode) through SwiftUI's
+    /// layout pass each time, even though `viewModel.results` only
+    /// changes once per debounce window. With `.equatable()`, SwiftUI
+    /// runs the cheap custom-`==` instead of rebuilding the tree.
     private var resultsList: some View {
-        // ScrollViewReader so `selectedResultID` changes (via ↑/↓ keyboard
-        // navigation) can scroll the highlighted row into view. Without
-        // this, a user pressing ↓ thirty times sees the last 29 selection
-        // moves happen invisibly off-screen.
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: Space.xs) {
-                    ForEach(viewModel.results, id: \.message.id) { result in
-                        SpotlightResultRow(
-                            result: result,
-                            isSelected: selectedResultID == result.message.id,
-                            onTap: { selectedResultID = result.message.id }
-                        )
-                        // Double-click → open the chat in Messages.app and dismiss.
-                        // `simultaneousGesture` so the row's single-click selection
-                        // still fires for the first of the two clicks.
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded { reveal(result) }
-                        )
-                        .id(result.message.id)
-                    }
-                }
-                .padding(.horizontal, Space.md)
-                .padding(.vertical, Space.sm)
-            }
-            .onChange(of: selectedResultID) { _, newID in
-                guard let newID else { return }
-                withAnimation(.bmDefault) {
-                    proxy.scrollTo(newID, anchor: .center)
-                }
-            }
-        }
+        SpotlightResultsList(
+            results: viewModel.results,
+            selectedResultID: selectedResultID,
+            onSelect: { selectedResultID = $0 },
+            onReveal: reveal
+        )
+        .equatable()
     }
 
     /// Inline autocomplete — sits in the content area while the user is typing
@@ -832,10 +817,84 @@ struct SpotlightPanel: View {
             Text(reason)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            // The actionable bit. Without this the panel told the user to
+            // "download the model" but gave them nothing to click — the
+            // download CTA only existed on the dashboard NL bar. Now the
+            // panel drives the download itself: one click starts it, the
+            // query the user just typed is already stashed (pendingQuery),
+            // and it auto-fires once the runtime swaps to MLX.
+            switch nl.downloadState {
+            case .idle, .failed:
+                Button {
+                    nl.beginDownload()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text(nl.downloadState.isFailed
+                             ? "Retry download"
+                             : "Download model (~1 GB)")
+                            .fontWeight(.medium)
+                    }
+                    .padding(.horizontal, Space.md)
+                    .padding(.vertical, Space.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                            .fill(Color.purple.opacity(0.18))
+                    )
+                    .foregroundStyle(.purple)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, Space.xs)
+
+            case .downloading:
+                // Live progress. `downloadProgress` ticks via the
+                // @Observable downloader, so this re-renders as bytes land.
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: nl.downloadProgress?.fraction ?? 0)
+                        .progressViewStyle(.linear)
+                        .tint(.purple)
+                    Text(Self.downloadStatusText(nl.downloadProgress))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, Space.xs)
+
+            case .ready:
+                // Container loaded — the swap + auto-fire of the stashed
+                // query is imminent; show a brief warming spinner.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Starting up…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, Space.xs)
+            }
+
             Text("You can keep using keyword search — press Tab or ESC.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    /// "412 MB / 1.0 GB · 8 MB/s · ~1m left" — compact one-liner under the
+    /// download bar. Falls back gracefully when totals/ETA aren't known yet.
+    private static func downloadStatusText(_ p: ModelDownloadProgress?) -> String {
+        guard let p, p.totalBytes > 0 else { return "Starting download…" }
+        let bcf = ByteCountFormatter()
+        bcf.countStyle = .file
+        let done = bcf.string(fromByteCount: p.bytesDownloaded)
+        let total = bcf.string(fromByteCount: p.totalBytes)
+        var parts = ["\(done) / \(total)"]
+        if p.bytesPerSecond > 0 {
+            parts.append("\(bcf.string(fromByteCount: Int64(p.bytesPerSecond)))/s")
+        }
+        if let eta = p.etaSeconds, eta > 0, eta.isFinite {
+            let m = Int(eta) / 60, s = Int(eta) % 60
+            parts.append(m > 0 ? "~\(m)m left" : "~\(s)s left")
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// Render one candidate (a `MessageSearch.Result`) as a clickable
@@ -1391,6 +1450,83 @@ struct SpotlightPanel: View {
                 .font(.caption)
         }
         .foregroundStyle(.tertiary)
+    }
+}
+
+/// Result list, isolated so it skips re-evaluation when the user is
+/// JUST typing (which mutates `viewModel.query` but not
+/// `viewModel.results`). Conforms to `Equatable` with a custom `==`
+/// that compares the ordered set of `message.id`s + the selected ID;
+/// the `onReveal` closure is deliberately ignored — it's recaptured
+/// every parent render but the produced view tree is identical.
+///
+/// Wrapped in `.equatable()` at the parent call site so SwiftUI runs
+/// the cheap `==` before re-running `body`. With this in place, a
+/// keystroke that doesn't change the result set produces zero
+/// re-layout work on the 50-row list.
+///
+/// Per the 2026-05-28 typing-lag investigation: the panel's body
+/// re-renders on every `viewModel.query` change because it reads
+/// the query (through `filters`/`suggestions`/etc). Without this
+/// extraction, that re-render fanned out to all rows — each
+/// re-evaluating AvatarView, formatted timestamps, reaction
+/// clusters, and attributedBody-derived text. NL mode doesn't show
+/// this lag because it binds the field to `nl.query`, leaving
+/// `viewModel.query` untouched.
+private struct SpotlightResultsList: View, Equatable {
+    let results: [MessageSearch.Result]
+    let selectedResultID: Int64?
+    // Closures are captured fresh by the parent every render; we
+    // intentionally drop them from `==` so the Equatable diff stays
+    // O(result-IDs) and lets SwiftUI skip the body when nothing
+    // visible changed.
+    let onSelect: (Int64) -> Void
+    let onReveal: (MessageSearch.Result) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: Space.xs) {
+                    ForEach(results, id: \.message.id) { result in
+                        SpotlightResultRow(
+                            result: result,
+                            isSelected: selectedResultID == result.message.id,
+                            onTap: { onSelect(result.message.id) }
+                        )
+                        // Double-click → open the chat in Messages.app and dismiss.
+                        // `simultaneousGesture` so the row's single-click selection
+                        // still fires for the first of the two clicks.
+                        .simultaneousGesture(
+                            TapGesture(count: 2).onEnded { onReveal(result) }
+                        )
+                        .id(result.message.id)
+                    }
+                }
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+            }
+            .onChange(of: selectedResultID) { _, newID in
+                guard let newID else { return }
+                withAnimation(.bmDefault) {
+                    proxy.scrollTo(newID, anchor: .center)
+                }
+            }
+        }
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        // Selection change → re-render (so the highlight moves).
+        guard lhs.selectedResultID == rhs.selectedResultID else { return false }
+        // Result-set change → re-render. Compare the ID sequence
+        // rather than the full `MessageSearch.Result` (which carries
+        // decoded text, avatars, reactions — Equatable but expensive
+        // to walk per keystroke). Same IDs in the same order = same
+        // visible rows.
+        if lhs.results.count != rhs.results.count { return false }
+        for (a, b) in zip(lhs.results, rhs.results) {
+            if a.message.id != b.message.id { return false }
+        }
+        return true
     }
 }
 

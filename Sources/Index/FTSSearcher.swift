@@ -375,6 +375,89 @@ public struct FTSSearcher: Sendable {
         return results
     }
 
+    // MARK: - SQL aggregate count (Perf Pass C, Codex #4 step ②)
+
+    /// Count matching messages against the FTS5 mirror with a true SQL
+    /// `COUNT(*)` — without materializing or body-decoding any rows.
+    ///
+    /// Same parity contract as `MessageSearch.aggregateCount`: a `COUNT(*)` is
+    /// only byte-for-byte equal to `search(...).count` when NO Swift-side body
+    /// refinement runs — i.e. the parsed phrase AST is empty (filter-only query)
+    /// and no `person` filter is supplied. In that case the FTS query omits the
+    /// MATCH entirely (`matchSQL = "1"`) and every metadata row becomes a Result,
+    /// so the count is exact. Returns `nil` (= "fall back to materialized
+    /// search") otherwise, including the regex / short-term cases the search
+    /// path delegates to INSTR anyway.
+    public func aggregateCount(
+        phrase: String,
+        person: Contact? = nil,
+        dateRange: ClosedRange<Date>? = nil,
+        now: Date = Date(),
+        caseSensitive: Bool = false
+    ) throws -> Int? {
+        guard person == nil else { return nil }
+
+        let parsed = MessageSearch.parseQuery(phrase, contacts: contacts, now: now)
+        let phraseAST = try PhraseQuery.parse(parsed.freeText, caseSensitive: caseSensitive)
+        // Filter-only is the sole aggregable shape (no body refinement). A
+        // non-empty AST — even an all-substring one — would be refined Swift-side
+        // in `search`, so a COUNT would diverge: bail to the materialized path.
+        guard phraseAST.isEmpty else { return nil }
+
+        if parsed.dateConstraintIsEmpty { return 0 }
+        let combinedConstraint = MessageSearch.intersectConstraint(dateRange, parsed.dateRange)
+        if case .empty = combinedConstraint { return 0 }
+        let combinedRange: ClosedRange<Date>?
+        switch combinedConstraint {
+        case .unbounded: combinedRange = nil
+        case .range(let r): combinedRange = r
+        case .empty: combinedRange = nil  // unreachable due to early return
+        }
+
+        // Same filter clauses + arg order as `search()` (the filter-only path,
+        // where `matchSQL` is "1" and the FROM is meta-only). COUNT(*) over the
+        // identical predicate.
+        let (chatSQL, chatArgs) = MessageSearch.chatClause(parsed.chatFilters, contacts: contacts)
+        let (fromSQL, fromArgs) = MessageSearch.fromClause(parsed.fromFilters, contacts: contacts)
+        let (toSQL, toArgs)     = MessageSearch.toClause(parsed.toFilters, contacts: contacts)
+        let (withSQL, withArgs) = MessageSearch.withClause(parsed.withFilters, contacts: contacts)
+        let (reactionsSQL, reactionsArgs) = MessageSearch.reactionsClause(parsed.reactionFilters)
+        let typeSQL = MessageSearch.typeClause(parsed.typeFilters)
+        let (metaDateSQL, metaDateArgs) = Self.metaDateClause(combinedRange)
+
+        let sql = """
+            SELECT COUNT(*) AS c
+            FROM idx.message_meta meta
+            JOIN chat_message_join cmj ON cmj.message_id = meta.rowid
+            JOIN chat ch ON ch.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON h.ROWID = meta.handle_id
+            JOIN message m ON m.ROWID = meta.rowid
+            WHERE 1
+              AND meta.associated_message_type = 0
+              \(metaDateSQL)
+              \(chatSQL)
+              \(fromSQL)
+              \(toSQL)
+              \(withSQL)
+              \(reactionsSQL)
+              \(typeSQL)
+            """
+
+        var args: [DatabaseValueConvertible] = metaDateArgs
+        args.append(contentsOf: chatArgs)
+        args.append(contentsOf: fromArgs)
+        args.append(contentsOf: toArgs)
+        args.append(contentsOf: withArgs)
+        args.append(contentsOf: reactionsArgs)
+
+        let indexPath = store.url.path
+        return try chatDB.dbQueue.writeWithoutTransaction { db in
+            try db.execute(sql: "ATTACH DATABASE ? AS idx", arguments: [indexPath])
+            defer { try? db.execute(sql: "DETACH DATABASE idx") }
+            return try Int.fetchOne(db, sql: sql, arguments: StatementArguments(args)) ?? 0
+        }
+    }
+
     // MARK: - Helpers
 
     /// Quote a needle so FTS5 trigram MATCH treats it as a literal substring.

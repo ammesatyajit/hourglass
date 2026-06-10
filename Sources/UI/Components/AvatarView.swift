@@ -81,17 +81,28 @@ public struct AvatarView: View {
         .overlay(Circle().strokeBorder(Color.hairline, lineWidth: 0.5))
     }
 
-    /// Decode the bytes once per render. SwiftUI elides re-renders when
-    /// inputs (and therefore decoded image identity) are unchanged, so this
-    /// is functionally cached.
-    ///
-    /// Cost is negligible — `NSImage(data:)` defers the actual bitmap parse
-    /// until the first `draw` call. Garbage-in (corrupt bytes, non-image
-    /// data) returns nil and we fall through to initials cleanly — never a
-    /// crash, never a flashing black square.
+    /// Decoded-image cache keyed by the raw bytes. `NSImage(data:)` returns a
+    /// NEW image identity on every call, so an uncached decode forces AppKit
+    /// to re-rasterize the photo on every body re-evaluation (hover toggles,
+    /// scroll-driven re-renders) — visible as scroll hitches on avatar-heavy
+    /// lists. Same bytes → same `NSImage` instance keeps the texture reusable.
+    /// NSCache is thread-safe and evicts under memory pressure.
+    private static let decodeCache: NSCache<NSData, NSImage> = {
+        let c = NSCache<NSData, NSImage>()
+        c.countLimit = 768
+        return c
+    }()
+
+    /// Garbage-in (corrupt bytes, non-image data) returns nil and we fall
+    /// through to initials cleanly — never a crash, never a flashing black
+    /// square. Failed decodes aren't cached; they're rare and cheap to retry.
     private var decodedImage: NSImage? {
         guard let imageData, !imageData.isEmpty else { return nil }
-        return NSImage(data: imageData)
+        let key = imageData as NSData
+        if let cached = Self.decodeCache.object(forKey: key) { return cached }
+        guard let image = NSImage(data: imageData) else { return nil }
+        Self.decodeCache.setObject(image, forKey: key)
+        return image
     }
 
     /// Initials font scales linearly with diameter so a 28pt avatar reads

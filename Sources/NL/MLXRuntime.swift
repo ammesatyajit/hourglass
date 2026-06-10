@@ -30,6 +30,7 @@
 //
 
 import Foundation
+import MLX
 import MLXLMCommon
 import MLXLLM
 
@@ -61,6 +62,11 @@ public actor MLXRuntime: LLMRuntime {
     /// Display name surfaced in the trace footer ("Powered by …").
     public nonisolated let modelLabel: String
 
+    /// Which chat-template family the loaded model belongs to. Drives the
+    /// per-family render-kwarg handling in `respond` — only Qwen3 honours
+    /// (and needs) `enable_thinking`. See `NLModelFamily`.
+    private nonisolated let family: NLModelFamily
+
     /// Marker capturing whether we successfully exercised the model after
     /// construction. Set true after the first call returns — the
     /// `ChatSession` interface lazily warms on first use, and a failure at
@@ -69,12 +75,28 @@ public actor MLXRuntime: LLMRuntime {
     /// `.ready` state already gates on successful load.
     public nonisolated var isReady: Bool { get async { true } }
 
+    /// Preferred initializer — derives the label AND the chat-template family
+    /// from the model id, so the runtime is correct for BOTH Qwen3 (default
+    /// Standard/4B) and Qwen2.5-Instruct (opt-in High/7B) without the caller
+    /// having to know the per-family quirks.
+    public init(container: ModelContainer, modelID: String) {
+        self.container = container
+        self.family = NLModelPreference.family(forModelID: modelID)
+        self.modelLabel = NLModelPreference.displayLabel(forModelID: modelID)
+    }
+
+    /// Explicit initializer — kept so call sites that want to hand in a
+    /// specific label/family can. Defaults to the Qwen3-4B Standard mode
+    /// (the new default model) so any incidental caller gets the right
+    /// template handling rather than the stale 1.7B label.
     public init(
         container: ModelContainer,
-        modelLabel: String = "Gemma 4 E2B IT (MLX)"
+        modelLabel: String = NLModelQuality.standard.displayLabel,
+        family: NLModelFamily = .qwen3
     ) {
         self.container = container
         self.modelLabel = modelLabel
+        self.family = family
     }
 
     /// Generate a structured plan via the model. We construct a fresh
@@ -94,10 +116,35 @@ public actor MLXRuntime: LLMRuntime {
             temperature: 0.0
         )
 
+        // CHAT-TEMPLATE HANDLING IS PER-FAMILY (see `NLModelFamily`):
+        //
+        // • Qwen3 (default Standard/4B): the template emits a `<think>…</think>`
+        //   reasoning block BEFORE its answer unless `enable_thinking=false`
+        //   is passed as a template render kwarg. We measured the cost: every
+        //   ReAct turn spent ~10s generating a think block, and a small model's
+        //   low-quality reasoning then RE-called the same tool instead of
+        //   answering — 8 turns × 10s = 83s with no final answer ("who did I
+        //   text the most" looped topContacts ×8). The soft-switch `/no_think`
+        //   in the prompt did NOT suppress it (the mlx-community template
+        //   ignores it); the template kwarg does. With this off, a tool-call
+        //   turn drops to ~1–3s. `additionalContext` is mlx-swift-lm's
+        //   documented passthrough to the template's render kwargs.
+        //
+        // • Qwen2.5-Instruct (opt-in High/7B): NO reasoning mode — its
+        //   template never references `enable_thinking` and never emits
+        //   `<think>`. We deliberately DON'T pass the kwarg here so the render
+        //   kwargs match exactly what the 2.5 template expects (a stray kwarg
+        //   would be ignored by Jinja, but matching the template's contract is
+        //   the correct, future-proof behaviour). The `/no_think` token left
+        //   in the system prompt is a harmless no-op for this family.
+        let additionalContext: [String: any Sendable]? = family.supportsEnableThinkingKwarg
+            ? ["enable_thinking": false]
+            : nil
         let session = ChatSession(
             container,
             instructions: systemPrompt,
-            generateParameters: parameters
+            generateParameters: parameters,
+            additionalContext: additionalContext
         )
 
         do {
@@ -107,5 +154,19 @@ public actor MLXRuntime: LLMRuntime {
         } catch {
             throw MLXRuntimeError.inferenceFailed(underlying: String(describing: error))
         }
+    }
+
+    /// Free the Metal buffer cache once a whole NL query is done. MLX
+    /// keeps a pool of GPU buffers warm between evaluations for speed;
+    /// after the answer is on screen we don't need them, and holding the
+    /// working set keeps the GPU + unified memory in an elevated power
+    /// state. Clearing returns the device to idle. The model WEIGHTS stay
+    /// resident in the `ModelContainer` (cheap to keep, expensive to
+    /// reload) — this only drops the transient activation/KV buffers, so
+    /// the next query just re-warms the cache (a few ms) rather than
+    /// reloading the model. Net: no battery drain at rest, negligible
+    /// latency cost. The model container is unaffected.
+    public func releaseResources() async {
+        MLX.GPU.clearCache()
     }
 }

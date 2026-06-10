@@ -46,3 +46,4 @@ sparkle_eddsa_priv*
 .vscode/
 .idea/
 *.swp
+.claude/worktrees/

@@ -95,6 +95,19 @@ struct NLFinalAnswer: Sendable, Equatable {
     /// (e.g. top-contacts result row 0). UI displays this as the answer's
     /// supporting evidence.
     let contactIndex: Int?
+    /// Indices into the most-recent candidate list the model chose as
+    /// SUPPORTING EVIDENCE for its answer. The loop reorders candidates so
+    /// these surface directly under the hero in the UI (the answer view
+    /// shows hero + next 4). Empty when the model didn't cite specific
+    /// messages — we then fall back to the natural search order.
+    let evidenceIndices: [Int]
+
+    init(answer: String, heroIndex: Int?, contactIndex: Int? = nil, evidenceIndices: [Int] = []) {
+        self.answer = answer
+        self.heroIndex = heroIndex
+        self.contactIndex = contactIndex
+        self.evidenceIndices = evidenceIndices
+    }
 }
 
 // MARK: - Parser
@@ -118,18 +131,44 @@ enum NLToolCallParser {
     /// Decode the first `{ ... }` object in `raw` as EITHER a tool call
     /// or a final answer. Returns `.tool(call)` or `.final(answer)`.
     static func parse(_ raw: String) throws -> Decoded {
-        guard let slice = PlanJSONParser.extractFirstJSONObject(from: raw) else {
+        // Defensive: strip any Qwen3 `<think>…</think>` reasoning block
+        // before scanning for JSON. We disable thinking at the template
+        // level (`enable_thinking: false` in MLXRuntime), but if a block
+        // ever leaks, its prose can contain stray `{`/`}` that would
+        // confuse the brace scanner. Remove closed blocks AND a dangling
+        // unclosed `<think>` (truncated by the token budget) up to EOS.
+        let cleaned = Self.stripThinkBlocks(raw)
+        guard let slice = PlanJSONParser.extractFirstJSONObject(from: cleaned) else {
             throw ParseError.noJSONObjectFound
         }
         guard let data = slice.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ParseError.decodeFailed("not a JSON object")
         }
-        // Terminal shape: { "answer": "...", "hero_index": N }
+        // Terminal shape: { "answer": "...", "hero_index": N,
+        //                   "evidence_indices": [a, b, c] }
         if let answer = json["answer"] as? String {
             let hero = json["hero_index"] as? Int
             let contact = json["contact_index"] as? Int
-            return .final(NLFinalAnswer(answer: answer, heroIndex: hero, contactIndex: contact))
+            // `evidence_indices` is tolerant: accept an array of ints,
+            // an array of numeric strings, or a single int. Small models
+            // emit all three shapes.
+            var evidence: [Int] = []
+            if let arr = json["evidence_indices"] as? [Any] {
+                for e in arr {
+                    if let i = e as? Int { evidence.append(i) }
+                    else if let d = e as? Double { evidence.append(Int(d)) }
+                    else if let s = e as? String, let i = Int(s) { evidence.append(i) }
+                }
+            } else if let one = json["evidence_indices"] as? Int {
+                evidence = [one]
+            }
+            return .final(NLFinalAnswer(
+                answer: answer,
+                heroIndex: hero,
+                contactIndex: contact,
+                evidenceIndices: evidence
+            ))
         }
         // Tool-call shape: { "tool": "...", "args": {...} }
         guard let tool = json["tool"] as? String else {
@@ -152,6 +191,23 @@ enum NLToolCallParser {
         case tool(NLToolCall)
         case final(NLFinalAnswer)
     }
+
+    /// Remove `<think>…</think>` blocks (and a trailing unclosed `<think>`)
+    /// from a raw model output. Case-insensitive on the tags. Cheap string
+    /// scan — no regex, so a pathological block can't blow up.
+    static func stripThinkBlocks(_ raw: String) -> String {
+        var s = raw
+        while let open = s.range(of: "<think>", options: .caseInsensitive) {
+            if let close = s.range(of: "</think>", options: .caseInsensitive, range: open.upperBound..<s.endIndex) {
+                s.removeSubrange(open.lowerBound..<close.upperBound)
+            } else {
+                // Unclosed (truncated) — drop from the tag to the end.
+                s.removeSubrange(open.lowerBound..<s.endIndex)
+                break
+            }
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 // MARK: - The loop
@@ -171,6 +227,19 @@ public extension NLAgent {
         maxIterations: Int = 8,
         maxCandidates: Int = 50
     ) async -> NLQueryResult {
+        // DETERMINISTIC FAST PATH — runs BEFORE the brittle ReAct loop. When
+        // the query reads as a question scoped to a real PERSON (+ optional
+        // timeframe) that resolves to an actual conversation, we resolve the
+        // 1:1 directly (NEVER a group matched by display-name substring),
+        // retrieve the window, and do ONE focused read-and-answer call. When
+        // it doesn't apply, this returns nil and the existing loop runs
+        // exactly as before — so keyword queries ("photos from June") never
+        // regress. See `ScopedPersonQuery` / `answerScopedPersonQuestion`.
+        if let scoped = await answerScopedPersonQuestion(userQuery: userQuery, now: now) {
+            reactLogger.info("react: handled by deterministic scoped-person path (degraded=\(scoped.degradedToFallback, privacy: .public))")
+            return scoped
+        }
+
         var trace: [NLTraceStep] = []
         let startAll = Date()
 
@@ -189,10 +258,46 @@ public extension NLAgent {
         var lastContacts: [DashboardStats.ContactStat] = []
         var iterations = 0
 
-        // Heroless degraded answer the loop falls back to if the model
-        // never emits anything parseable.
-        var degraded = true
+        // Repeat-call breaker. A small model can get stuck re-issuing the
+        // SAME tool with the SAME args (observed: "who did I text the most"
+        // called topContacts ×8, never answered, 83s wasted). We now track
+        // EVERY call signature we've executed (not just the immediately
+        // previous one) so a model that re-issues an earlier call after one
+        // intervening call is also caught. On a duplicate we don't just break
+        // and hope — we force a FINAL-ANSWER-ONLY synthesis turn (no tool
+        // catalog) so the model actually answers from what it already saw.
+        var executedSignatures = Set<String>()
+        var repeatedCall = false
+
+        // Read-cap: how many message-reading tool calls (search / readMessages)
+        // we allow before forcing the model to answer. Investigative queries
+        // should converge in 1-3 reads; beyond that the small model is usually
+        // spinning, so we force the final-answer turn rather than burn all 8
+        // iterations. Stats tools (topContacts etc.) don't count — they return
+        // a complete answer in one shot and are handled by `answerNowHint`.
+        var readToolCalls = 0
+        let maxReadToolCalls = 3
+
+        // Honest degradation tracking (Codex #2.2). `modelEmittedFinal` is the
+        // SINGLE source of truth for "did the model actually answer": set true
+        // ONLY when the MODEL emits a real, parseable final answer (on a normal
+        // turn OR the forced final-answer turn). The post-loop synthesis
+        // fallback (`synthesizeFallbackAnswer`) deliberately does NOT set it —
+        // a synthesized "Found N messages" is not the model answering, so
+        // `degradedToFallback` reports it truthfully. (The old code kept a
+        // separate `degraded` flag and flipped it false on synthesis, which
+        // lied — the UI showed a confident answer the model never produced.)
+        var modelEmittedFinal = false
         var finalAnswer: NLFinalAnswer? = nil
+
+        // Set when we want ONE more LLM turn that is FINAL-ANSWER-ONLY: no tool
+        // catalog, an explicit "answer now from what you have" instruction.
+        // Triggered by a duplicate tool call or the read-cap. The forced turn
+        // runs inside the loop (so it shares the iteration budget) but cannot
+        // itself issue a tool — a tool call from it is ignored and we fall
+        // through to synthesis.
+        var forceFinalAnswer = false
+        var forceFinalReason = ""
 
         reactLogger.info("react: query=\"\(userQuery, privacy: .public)\"")
 
@@ -200,23 +305,41 @@ public extension NLAgent {
             iterations += 1
             let iterStart = Date()
 
-            let userPrompt = Self.buildReActUserPrompt(
-                question: userQuery,
-                now: now,
-                scratchpad: scratchpad
-            )
+            // FINAL-ANSWER-ONLY turn (forced): no tool catalog, an explicit
+            // "you already called X — do not repeat it, answer now" signal.
+            // Otherwise the normal tool-loop prompt.
+            let systemPrompt = forceFinalAnswer
+                ? Self.forcedFinalAnswerSystemPrompt
+                : Self.toolLoopSystemPrompt
+            let userPrompt = forceFinalAnswer
+                ? Self.buildForcedFinalAnswerPrompt(
+                    question: userQuery,
+                    now: now,
+                    scratchpad: scratchpad,
+                    reason: forceFinalReason
+                )
+                : Self.buildReActUserPrompt(
+                    question: userQuery,
+                    now: now,
+                    scratchpad: scratchpad
+                )
             let raw: String
             do {
                 raw = try await runtime.respond(
-                    systemPrompt: Self.toolLoopSystemPrompt,
+                    systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
-                    maxTokens: 320
+                    // Bumped 320 → 512: the final turn now emits a 2–4
+                    // sentence evidence-grounded answer plus an
+                    // evidence_indices array, which is longer than the
+                    // old one-liner. Tool-call turns stay tiny; this only
+                    // affects the synthesis turn's headroom.
+                    maxTokens: 512
                 )
             } catch {
                 reactLogger.error("react: runtime threw at iter=\(iterations, privacy: .public): \(String(describing: error), privacy: .public)")
                 break
             }
-            reactLogger.info("react: iter=\(iterations, privacy: .public) raw (\(raw.count, privacy: .public) chars): \(raw, privacy: .public)")
+            reactLogger.info("react: iter=\(iterations, privacy: .public)\(forceFinalAnswer ? " [forced-final]" : "") raw (\(raw.count, privacy: .public) chars): \(raw, privacy: .public)")
 
             let decoded: NLToolCallParser.Decoded
             do {
@@ -228,10 +351,37 @@ public extension NLAgent {
                 break
             }
 
+            // If this was the forced final-answer turn, we accept ONLY a final
+            // answer. A tool call here means the model still didn't answer —
+            // stop and let the honest synthesis fallback run (we already told
+            // it not to call tools, and there's no catalog to call against).
+            if forceFinalAnswer {
+                if case .final(let answer) = decoded {
+                    finalAnswer = answer
+                    modelEmittedFinal = true
+                    reactLogger.info("react: forced final answer accepted at iter=\(iterations, privacy: .public)")
+                    trace.append(NLTraceStep(
+                        phase: .answering,
+                        label: "Final: \(answer.answer.prefix(80))",
+                        status: .complete,
+                        duration: Date().timeIntervalSince(iterStart)
+                    ))
+                } else {
+                    reactLogger.notice("react: forced final-answer turn still emitted a tool call — stopping, will synthesize honestly")
+                    trace.append(NLTraceStep(
+                        phase: .answering,
+                        label: "Stopped — couldn't get a direct answer",
+                        status: .complete,
+                        duration: Date().timeIntervalSince(iterStart)
+                    ))
+                }
+                break loop
+            }
+
             switch decoded {
             case .final(let answer):
                 finalAnswer = answer
-                degraded = false
+                modelEmittedFinal = true
                 reactLogger.info("react: final answer at iter=\(iterations, privacy: .public)")
                 trace.append(NLTraceStep(
                     phase: .answering,
@@ -242,6 +392,38 @@ public extension NLAgent {
                 break loop
 
             case .tool(let call):
+                // DUPLICATE-CALL HARDENING (Codex #2.1): reject a byte-identical
+                // tool call (same tool + same args) that we've ALREADY executed
+                // this loop — not just back-to-back, but anywhere in the run.
+                // The model is stuck (it already saw this exact observation and
+                // learned nothing). Instead of breaking and hoping, FORCE a
+                // final-answer-only turn: feed back an error observation, drop
+                // the tool catalog, and make it answer from what it has.
+                let signature = "\(call.tool)|\(Self.summarizeArgs(call.args))"
+                if executedSignatures.contains(signature) {
+                    repeatedCall = true
+                    forceFinalAnswer = true
+                    forceFinalReason = "You already called \(call.tool)(\(Self.summarizeArgs(call.args))) and saw its result above. Do NOT call it again — answer the question now from what you already have."
+                    reactLogger.notice("react: iter=\(iterations, privacy: .public) duplicate call \(signature, privacy: .public) — forcing final-answer-only turn")
+                    scratchpad += """
+
+                    Step \(iterations): \(call.tool)(\(Self.summarizeArgs(call.args)))
+                    Observation: ERROR — you already ran this exact query and saw the result above. Repeating it gives no new information. Answer the question NOW from what you already have.
+                    """
+                    // Label prefixed "Stopped — repeated" so the trace digest's
+                    // repeat-breaker detector still fires; marked complete (the
+                    // forced final-answer turn that follows appends its own
+                    // answering step).
+                    trace.append(NLTraceStep(
+                        phase: .answering,
+                        label: "Stopped — repeated the same lookup; answering from what we have",
+                        status: .complete,
+                        duration: Date().timeIntervalSince(iterStart)
+                    ))
+                    continue loop
+                }
+                executedSignatures.insert(signature)
+
                 trace.append(NLTraceStep(
                     phase: .searching,
                     label: "Tool: \(call.tool) (\(Self.summarizeArgs(call.args)))",
@@ -270,6 +452,19 @@ public extension NLAgent {
                 Observation: \(observation.observation)
                 """
                 reactLogger.info("react: iter=\(iterations, privacy: .public) observation: \(observation.observation, privacy: .public)")
+
+                // ANSWER-AFTER-N-READS CAP (Codex #2.4): count message-reading
+                // tool calls. If the model keeps reading/searching past the cap
+                // without answering, it's spinning — force the final-answer
+                // turn rather than burning the rest of the iteration budget.
+                if Self.isReadTool(call.tool) {
+                    readToolCalls += 1
+                    if readToolCalls >= maxReadToolCalls {
+                        forceFinalAnswer = true
+                        forceFinalReason = "You have read messages \(readToolCalls) times. Stop searching and answer the question NOW from what you've already read above."
+                        reactLogger.notice("react: read-cap hit (\(readToolCalls, privacy: .public)) — forcing final-answer-only turn")
+                    }
+                }
             }
         }
 
@@ -282,6 +477,30 @@ public extension NLAgent {
             duration: Date().timeIntervalSince(startAll)
         )
 
+        // Synthesis fallback: the loop ended WITHOUT a model-emitted final
+        // answer (hit the iteration cap, the forced-final turn still didn't
+        // answer, or a parse failure). Don't strand the user on "no match"
+        // when we actually gathered data — build a basic answer from the last
+        // observation so a stats query like "who did I text the most" still
+        // resolves. This is the safety net for small-model non-convergence.
+        //
+        // HONEST DEGRADATION (Codex #2.2): we record that the answer was
+        // SYNTHESIZED (not model-emitted) and leave `modelEmittedFinal` false.
+        // A synthesized "Found N messages — see the top match" is NOT the model
+        // answering the question; it's us papering over non-convergence, so the
+        // result reports `degradedToFallback == true` truthfully. (Previously
+        // this flipped a `degraded` flag to false, which made the UI show a
+        // confident answer the model never actually produced.)
+        var answerWasSynthesized = false
+        if finalAnswer == nil, let synth = Self.synthesizeFallbackAnswer(
+            contacts: lastContacts,
+            candidates: lastCandidates
+        ) {
+            finalAnswer = synth
+            answerWasSynthesized = true
+            reactLogger.notice("react: synthesized fallback answer (HONEST degraded — model emitted no final answer; repeatedCall=\(repeatedCall, privacy: .public), iters=\(iterations, privacy: .public))")
+        }
+
         // Pick the hero from whatever the model anchored. Default to the
         // first candidate the most recent search returned.
         var hero: MessageSearch.Result? = lastCandidates.first
@@ -291,6 +510,30 @@ public extension NLAgent {
         }
         let explanation: String? = finalAnswer?.answer
 
+        // Reorder candidates so the model's chosen EVIDENCE surfaces
+        // first — the answer view renders hero + the next 4 candidates,
+        // so curating that head matters. Order: hero (if any) → cited
+        // evidence (in the model's order) → everything else (natural
+        // search order). De-duped by message id. When the model cited
+        // nothing, this is a no-op and the natural order stands.
+        var orderedCandidates = lastCandidates
+        if let final = finalAnswer {
+            var head: [MessageSearch.Result] = []
+            var seen = Set<Int64>()
+            func pushIfValid(_ idx: Int) {
+                guard idx >= 0, idx < lastCandidates.count else { return }
+                let r = lastCandidates[idx]
+                if seen.insert(r.message.id).inserted { head.append(r) }
+            }
+            if let h = final.heroIndex { pushIfValid(h) }
+            for e in final.evidenceIndices { pushIfValid(e) }
+            if !head.isEmpty {
+                let tail = lastCandidates.filter { !seen.contains($0.message.id) }
+                orderedCandidates = head + tail
+                hero = head.first
+            }
+        }
+
         trace.append(NLTraceStep(
             phase: .answering,
             label: "Done in \(Self.formatDuration(Date().timeIntervalSince(startAll)))",
@@ -298,15 +541,57 @@ public extension NLAgent {
             duration: Date().timeIntervalSince(startAll)
         ))
 
+        // HONEST `degradedToFallback` (Codex #2.2): true IFF the model did NOT
+        // produce a real final answer for this query. The model genuinely
+        // answering (on a normal turn OR the forced final-answer turn) is the
+        // ONLY non-degraded outcome — `modelEmittedFinal` is the single source
+        // of truth. A SYNTHESIZED answer ("Found N messages" / "you texted X
+        // the most") is degraded even when it's useful and has a hero, because
+        // the MODEL didn't produce it. A model answer with no hero (e.g. a
+        // pure-stats answer that cites no single message) is NOT degraded —
+        // the model still answered. (`answerWasSynthesized` is by construction
+        // `!modelEmittedFinal`; kept in the OR for explicitness/readability.)
+        let degradedHonest = !modelEmittedFinal || answerWasSynthesized
         return NLQueryResult(
             hero: hero,
-            candidates: Array(lastCandidates.prefix(maxCandidates)),
+            candidates: Array(orderedCandidates.prefix(maxCandidates)),
             trace: trace,
             plan: nil,
             fallbackQuery: userQuery,
             explanation: explanation,
-            degradedToFallback: degraded && hero == nil
+            degradedToFallback: degradedHonest
         )
+    }
+
+    /// Build a basic answer from gathered data when the model never emitted
+    /// a final answer (capped or looped). Prefers a top-contacts summary
+    /// (the common stats query), then falls back to "here's the top match"
+    /// when we have message candidates. Returns nil only when we have
+    /// nothing at all — then the caller's degraded path stands.
+    internal static func synthesizeFallbackAnswer(
+        contacts: [DashboardStats.ContactStat],
+        candidates: [MessageSearch.Result]
+    ) -> NLFinalAnswer? {
+        if let top = contacts.first {
+            var text = "You texted \(top.displayName) the most — \(top.total) messages (\(top.sent) sent, \(top.received) received)."
+            if contacts.count >= 2 {
+                let runners = contacts.dropFirst().prefix(2)
+                    .map { "\($0.displayName) (\($0.total))" }
+                    .joined(separator: ", ")
+                text += " Then \(runners)."
+            }
+            return NLFinalAnswer(answer: text, heroIndex: nil, contactIndex: 0, evidenceIndices: [])
+        }
+        if !candidates.isEmpty {
+            let n = candidates.count
+            return NLFinalAnswer(
+                answer: "Found \(n) relevant message\(n == 1 ? "" : "s") — see the top match below.",
+                heroIndex: 0,
+                contactIndex: nil,
+                evidenceIndices: Array(0..<min(n, 5))
+            )
+        }
+        return nil
     }
 
     // MARK: - Tool execution
@@ -318,6 +603,43 @@ public extension NLAgent {
         let observation: String
         let summary: String
         let failed: Bool
+    }
+
+    /// How many result rows to surface in a `search` observation. With
+    /// Qwen3-1.7B's 32K context this is comfortable — ~18 rows × ~90
+    /// tokens ≈ 1.6K tokens, leaving plenty for the scratchpad history.
+    static let searchPreviewCount = 18
+    /// How many rows to surface in a `readMessages` (chronological) dump.
+    /// Higher because investigative scans need the full local window.
+    static let readPreviewCount = 45
+
+    /// Appended to stats-tool observations (topContacts / topGroups /
+    /// count / overview). These tools return the COMPLETE answer in one
+    /// shot — there's nothing more to fetch — so the model must answer,
+    /// not re-call. Without this nudge a small model re-issued the same
+    /// stats tool every turn until the iteration cap (the topContacts ×8
+    /// loop). The repeat-breaker + synthesis fallback are the safety net;
+    /// this is the first line of defense (so it answers in 2 turns).
+    static let answerNowHint = "You now have everything needed — emit the FINAL answer JSON now. Do NOT call another tool."
+
+    /// Build the adaptive-breadth hint appended to a result observation.
+    /// The whole point: the small model doesn't have to infer the
+    /// broaden/narrow heuristic — the observation TELLS it what to do
+    /// based on the count. This is what makes "ask broader if too narrow,
+    /// narrow if too broad" actually happen with a 1.7B planner.
+    static func breadthHint(count: Int, shown: Int) -> String {
+        switch count {
+        case 0:
+            return "\nZERO matches — TOO NARROW. Broaden and retry: drop a filter, widen the date window (or use all_time), OR-join synonyms (e.g. \"dinner|food|eat\"), or use *substring* matching. Do NOT answer \"nothing found\" until you've tried at least one broader query."
+        case 1...3:
+            return "\nOnly \(count) match\(count == 1 ? "" : "es") — possibly TOO NARROW. If this fully answers the question, proceed to the answer. If it seems incomplete, broaden once and retry."
+        case 4...80:
+            // Healthy range — read them.
+            let more = count > shown ? " (\(count - shown) more not shown — narrow further if you need to read every one)" : ""
+            return "\nGood range — read these \(shown) carefully\(more)."
+        default:
+            return "\n\(count) matches — TOO BROAD to read individually (showing \(shown)). If the question is about a SPECIFIC event/message, NARROW and retry: add a person (with:/from:), a date window, a type: filter, or more specific keywords. If the question is about VOLUME or WHO/HOW-MANY, you can answer from the count + top results without narrowing."
+        }
     }
 
     /// Dispatch ONE tool call. Mutates `lastCandidates` / `lastContacts`
@@ -342,13 +664,17 @@ public extension NLAgent {
                     limit: limit
                 )
                 lastCandidates = results
-                // Show up to 6 results with full bodies — enough context
-                // for the model to judge tone/relevance without blowing
-                // the 1.5B context window.
-                let preview = results.prefix(6).enumerated().map { (i, r) in
+                // Show up to `searchPreviewCount` results with full bodies.
+                // Qwen3-1.7B's 32K context lets us surface many more rows
+                // than the old 6, so the model can actually READ the result
+                // set and synthesize over it rather than guessing from a
+                // tiny sample.
+                let shown = min(Self.searchPreviewCount, results.count)
+                let preview = results.prefix(shown).enumerated().map { (i, r) in
                     NLAgent.formatResultLine(index: i, result: r)
                 }.joined(separator: "\n")
-                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing top \(min(6, results.count)) with full bodies:\n\(preview)"
+                let hint = NLAgent.breadthHint(count: results.count, shown: shown)
+                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(results.count) match\(results.count == 1 ? "" : "es")",
@@ -370,25 +696,47 @@ public extension NLAgent {
             let personName = call.args["with"]?.asString ?? call.args["person"]?.asString
             let limit = call.args["limit"]?.asInt ?? 25
             do {
-                let results = try await tools.readMessages(
-                    in: dateRange,
-                    with: personName,
-                    limit: limit
-                )
+                // STRICT 1:1 SCOPING (Codex #2.3): when a person is named, the
+                // ReAct path used to map `with:NAME` → `in:"NAME"`, which ORs a
+                // `display_name LIKE '%NAME%'` branch and leaks a same-named
+                // GROUP ("Annika effect" beat the Annika 1:1 — the Annika
+                // effect bug). We now resolve the person → their 1:1 (style=45)
+                // via the SAME `resolveScopedPersonChat` the deterministic path
+                // uses (no display_name branch → a group can never win), and
+                // read EXACTLY those chat ROWIDs. If the person doesn't resolve
+                // to any chat, we fall back to the old `readMessages` behaviour
+                // so we never silently return nothing.
+                var results: [MessageSearch.Result] = []
+                var scopeNote = ""
+                if let name = personName, !name.isEmpty,
+                   let chat = try await tools.resolveScopedPersonChat(named: name) {
+                    results = try await tools.readMessagesInChats(
+                        rowIDs: chat.chatRowIDs,
+                        in: dateRange,
+                        limit: limit
+                    )
+                    scopeNote = chat.isOneToOne ? "" : " (group — no 1:1 found)"
+                } else {
+                    results = try await tools.readMessages(
+                        in: dateRange,
+                        with: personName,
+                        limit: limit
+                    )
+                }
                 lastCandidates = results
-                // Show ALL results returned (capped at 30 to keep prompts
-                // sane). With limit=20-30 and ~400 char obs lines this is
-                // ~6-9k chars — well within Gemma 4 E2B's context budget
-                // (and was within Qwen 2.5 1.5B's effective context too).
-                let displayCount = min(results.count, 30)
+                // Show up to `readPreviewCount` rows chronologically. This
+                // is the "actually read the conversation" tool, so we show
+                // a wide local window — the model's 32K context absorbs it.
+                let displayCount = min(results.count, Self.readPreviewCount)
                 let preview = results.prefix(displayCount).enumerated().map { (i, r) in
                     NLAgent.formatResultLine(index: i, result: r)
                 }.joined(separator: "\n")
-                let scope = personName.map { "with \($0)" } ?? "(all chats)"
+                let scope = personName.map { "with \($0)\(scopeNote)" } ?? "(all chats)"
                 let windowLabel = dateRange.map {
                     "\(NLAgent.formatISODate($0.lowerBound))..\(NLAgent.formatISODate($0.upperBound))"
                 } ?? "all_time"
-                let obs = "Read \(results.count) message\(results.count == 1 ? "" : "s") \(scope) in \(windowLabel) (chronological). Showing \(displayCount):\n\(preview)"
+                let hint = NLAgent.breadthHint(count: results.count, shown: displayCount)
+                let obs = "Read \(results.count) message\(results.count == 1 ? "" : "s") \(scope) in \(windowLabel) (chronological). Showing \(displayCount):\n\(preview)\(hint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(results.count) msgs",
@@ -407,7 +755,7 @@ public extension NLAgent {
             do {
                 let n = try await tools.countMatching(query: query, in: dateRange)
                 return ToolObservation(
-                    observation: "Count = \(n).",
+                    observation: "Count = \(n).\n\(Self.answerNowHint)",
                     summary: "n=\(n)",
                     failed: false
                 )
@@ -452,7 +800,7 @@ public extension NLAgent {
                 let preview = stats.prefix(min(limit, 10)).enumerated().map { (i, s) in
                     "  [\(i)] \(s.displayName): \(s.total) total (\(s.sent) sent, \(s.received) received)"
                 }.joined(separator: "\n")
-                let obs = "Top \(stats.count) contact\(stats.count == 1 ? "" : "s"):\n\(preview)"
+                let obs = "Top \(stats.count) contact\(stats.count == 1 ? "" : "s"):\n\(preview)\n\(Self.answerNowHint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(stats.count) contacts",
@@ -473,7 +821,7 @@ public extension NLAgent {
                 let preview = stats.prefix(min(limit, 10)).enumerated().map { (i, s) in
                     "  [\(i)] \(s.displayName): \(s.sentByYou) sent / \(s.total) total"
                 }.joined(separator: "\n")
-                let obs = "Top \(stats.count) group\(stats.count == 1 ? "" : "s"):\n\(preview)"
+                let obs = "Top \(stats.count) group\(stats.count == 1 ? "" : "s"):\n\(preview)\n\(Self.answerNowHint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(stats.count) groups",
@@ -491,7 +839,7 @@ public extension NLAgent {
             do {
                 let o = try await tools.overviewStats(in: dateRange)
                 return ToolObservation(
-                    observation: "Overview: total=\(o.total), sent=\(o.sent), received=\(o.received), chats=\(o.chats)",
+                    observation: "Overview: total=\(o.total), sent=\(o.sent), received=\(o.received), chats=\(o.chats)\n\(Self.answerNowHint)",
                     summary: "total=\(o.total)",
                     failed: false
                 )
@@ -610,12 +958,24 @@ public extension NLAgent {
     ///   failure mode for one-shot planners.
     static var toolLoopSystemPrompt: String {
         """
-        You answer questions about iMessage history by calling TOOLS. Output ONE JSON object per turn — NO prose, NO markdown fences. After each tool call you receive an observation; READ it carefully and use it to decide your next call. When you have the answer, output a FINAL JSON.
+        /no_think
+        You answer questions about iMessage history by calling TOOLS. Output ONE JSON object per turn — NO prose, NO markdown fences, NO <think> blocks. After each tool call you receive an observation; READ it carefully and use it to decide your next call. When you have the answer, output a FINAL JSON.
+
+        YOUR JOB: converge on the RIGHT set of messages, READ them, then write a clear answer that CITES specific messages as evidence. You are not just running one search — you iterate until the result set is the right size to actually read, then you read it and synthesize.
+
+        THE LOOP (do this every time):
+        1. Run a search/read tool.
+        2. Look at the COUNT in the observation:
+           • ZERO or very few results → TOO NARROW. Broaden: drop a filter, widen the date window (try all_time), OR-join synonyms (food|dinner|eat), or use *substring*. Retry.
+           • Too many to read (the observation says "TOO BROAD") → NARROW: add a person (with:/from:), a date window, a type: filter, or sharper keywords. Retry.
+           • A readable number (≈4–80) → READ every shown row.
+        3. When the set is right and you've read it, emit the FINAL answer citing the messages that prove it.
+        You have up to 8 tool calls — spend them adapting breadth, not guessing.
 
         Available tools (priority order):
 
         1) {"tool":"readMessages","args":{"with":"<name or null>","in":"<date-range>","limit":<int>}}
-           Read a CHRONOLOGICAL dump of messages with a person in a window. Returns full message bodies. Use this FIRST for investigative queries — "what was my argument with X N weeks ago" — when you need to actually SCAN the conversation to identify where the argument starts. Limit 20-30 is plenty.
+           Read a CHRONOLOGICAL dump of messages in the 1:1 chat with a person in a window. Returns full message bodies. Use this FIRST for investigative queries — "what was my argument with X N weeks ago" — when you need to actually SCAN the conversation to identify where the argument starts. The `with` arg scopes to the 1:1 conversation with that person (NOT group chats they happen to be in). If readMessages comes back empty, fall through to `search` with `with:"NAME"` for the broader "any chat with NAME" scope. CRITICAL: pick a TIGHT date range (≤7 days) centered on the target time, and use limit 60-80. A wide window like last_30d returns the OLDEST 25 messages from the start of the month and buries the target in chatter — the model never sees it.
 
         2) {"tool":"search","args":{"query":"<operator-string>","in":"<date-range or null>","limit":<int>}}
            Run a structured KEYWORD search. Use this when you know specific terms to look for.
@@ -647,50 +1007,52 @@ public extension NLAgent {
 
         Date ranges (the "in" arg): pass a string like "last_7d", "last_14d", "last_30d", "last_3mo", "last_1y", "all_time", or explicit "YYYY-MM-DD..YYYY-MM-DD". For year scopes use "YYYY-01-01..YYYY-12-31".
 
-        Observation rows contain timestamp, ISO date, chat name, chat_id, sender, and full body — read them carefully to decide the next move.
+        Observation rows are numbered [0], [1], … and contain timestamp, ISO date, chat name, chat_id, sender, and full body — read them carefully to decide the next move AND to cite as evidence.
 
-        Final answer shape (emit when done):
-        {"answer":"<short natural-language answer>","hero_index":<index of best message in last result list, or null>}
+        FINAL answer shape (emit when done):
+        {"answer":"<2–4 sentence answer grounded in the messages you read>","hero_index":<index of the single most important message, or null>,"evidence_indices":[<indices of 2–5 messages that back up your answer>]}
+        • answer: written for the user, referencing what the messages actually say. Quote a short phrase when it helps.
+        • hero_index / evidence_indices: indices from the MOST RECENT observation's result list. These messages are shown to the user as proof, so pick the ones that genuinely support your answer. Use null / [] only for pure-stats answers (counts, rankings) where no single message is evidence.
 
         Rules:
-        - For INVESTIGATIVE queries ("what was my argument with X", "when did we plan Y", "show me when X happened") use readMessages FIRST. Then read the observation, identify a candidate timestamp + chat_id where tone shifts or the topic appears, then call messagesAroundTime to zoom in. Then emit a final answer.
-        - For STATS questions ("who/how-many/which") prefer topContacts / topGroups / countMatching / overviewStats.
-        - For "around N weeks ago" use a WIDE date range (e.g. last_30d for "3 weeks ago"). Fuzzy human time needs slack.
-        - You may call tools up to 8 times. End with a final-answer JSON.
-        - NEVER call rawSearchSQL unless every other tool fails.
-        - Output ONLY the JSON object. No prose.
+        - ADAPT BREADTH every turn based on the count (see THE LOOP above). Never stop at zero results without broadening first. Never answer a specific-event question off a "TOO BROAD" set without narrowing first.
+        - For INVESTIGATIVE queries ("what was my argument with X", "when did we plan Y") use readMessages on the 1:1 first, scan for the tone/topic shift, optionally messagesAroundTime to zoom, then synthesize with evidence_indices pointing at the key messages.
+        - For STATS questions ("who/how-many/which") prefer topContacts / topGroups / countMatching / overviewStats; evidence_indices can be empty.
+        - For "around N weeks/months ago" CALCULATE THE TARGET DATE (today minus N), then pass a TIGHT CENTERED range "YYYY-MM-DD..YYYY-MM-DD" (±3–5 days). DON'T use last_30d for these — it buries the target. Today's date is at the top of the user prompt.
+        - NEVER call rawSearchSQL unless every other tool fails. Output ONLY the JSON object.
 
         Examples:
 
         Q: who did I text the most in 2026
         Turn 1: {"tool":"topContacts","args":{"in":"2026-01-01..2026-12-31","limit":5}}
-        Observation: Top 5 contacts: [0] Sarah: 1240 total (...) ...
-        Turn 2: {"answer":"You texted Sarah the most in 2026 — 1240 messages total (623 sent, 617 received).","hero_index":null}
+        Observation: Top 5 contacts: [0] Sarah: 1240 total ...
+        Turn 2: {"answer":"You texted Sarah the most in 2026 — 1240 messages total (623 sent, 617 received), well ahead of everyone else.","hero_index":null,"evidence_indices":[]}
 
-        Q: find my argument with Annika 3 weeks ago
-        Turn 1: {"tool":"readMessages","args":{"with":"Annika","in":"last_30d","limit":25}}
-        Observation: Read 18 messages with Annika in last_30d (chronological). Showing 18:
-          [0] Sun May 4 2026 12:14 (2026-05-04T19:14:00Z) chat="Annika" chat_id=42 Annika: How was your day? :)
-          [1] Sun May 4 2026 12:30 (2026-05-04T19:30:00Z) chat="Annika" chat_id=42 You: Good — just finishing up the deck
-          [2] Mon May 5 2026 19:42 (2026-05-06T02:42:00Z) chat="Annika" chat_id=42 Annika: I can't believe you forgot AGAIN. This is the third time.
-          [3] Mon May 5 2026 19:45 (2026-05-06T02:45:00Z) chat="Annika" chat_id=42 You: I'm sorry. I really am. I had back-to-back …
-          [4] Mon May 5 2026 19:51 (2026-05-06T02:51:00Z) chat="Annika" chat_id=42 Annika: You always say that and nothing ever changes
-          [5] Tue May 6 2026 08:12 (2026-05-06T15:12:00Z) chat="Annika" chat_id=42 You: I want to talk through this properly tonight
-          [6] Wed May 7 2026 14:02 (2026-05-07T21:02:00Z) chat="Annika" chat_id=42 Annika: Fine. 8pm.
+        Q: what did Mom say about Thanksgiving plans  (BROADEN example)
+        Turn 1: {"tool":"search","args":{"query":"with:\\"Mom\\" thanksgiving","in":"all_time","limit":40}}
+        Observation: Found 0 matches. ZERO matches — TOO NARROW. Broaden and retry...
+        Turn 2: {"tool":"search","args":{"query":"with:\\"Mom\\" thanksgiving|turkey|holiday|dinner","in":"all_time","limit":40}}
+        Observation: Found 9 matches. Showing 9 with full bodies:
+          [0] ... Mom: are you coming home for thanksgiving?
+          [3] ... Mom: dinner's at 4, bring the pie
+          [7] ... You: landing wed night, i'll cook the turkey
           ...
-        Turn 2: {"tool":"messagesAroundTime","args":{"date":"2026-05-06T02:42:00Z","chat_id":42,"before":3,"after":10}}
-        Observation: Context around Mon May 5 2026 19:42 (chat_id=42): ...
-        Turn 3: {"answer":"The argument started on May 5 — Annika opened with \\"I can't believe you forgot AGAIN. This is the third time.\\" The exchange continued until May 7 when you agreed to talk it through.","hero_index":2}
+        Turn 3: {"answer":"You and Mom planned Thanksgiving over text: she asked if you were coming home, set dinner for 4pm and asked you to bring pie; you said you'd land Wednesday night and cook the turkey.","hero_index":3,"evidence_indices":[0,3,7]}
+
+        Q: find my argument with Annika around 3 weeks ago  (NARROW + read example; today 2026-05-27 → ~2026-05-06)
+        Turn 1: {"tool":"readMessages","args":{"with":"Annika","in":"2026-05-03..2026-05-09","limit":80}}
+        Observation: Read 42 messages with Annika ... Showing 42:
+          [2] Mon May 5 ... Annika: I can't believe you forgot AGAIN. This is the third time.
+          [3] Mon May 5 ... You: I'm sorry. I really am. I had back-to-back …
+          [4] Mon May 5 ... Annika: You always say that and nothing ever changes
+          [6] Wed May 7 ... Annika: Fine. 8pm.
+          ... Good range — read these 42 carefully.
+        Turn 2: {"answer":"The argument started May 5 when Annika said \\"I can't believe you forgot AGAIN — this is the third time.\\" You apologized; she said nothing changes; it cooled by May 7 when you agreed to talk it through at 8pm.","hero_index":2,"evidence_indices":[2,3,4,6]}
 
         Q: how many photos did I send Mom last month
         Turn 1: {"tool":"countMatching","args":{"query":"from:me to:\\"Mom\\" type:image last:30d","in":"last_30d"}}
         Observation: Count = 14.
-        Turn 2: {"answer":"You sent Mom 14 photos in the last 30 days.","hero_index":null}
-
-        Q: what plans did we make about vegas
-        Turn 1: {"tool":"search","args":{"query":"vegas","in":"all_time","limit":15}}
-        Observation: Found 24 matches. Showing top 6 with full bodies: ...
-        Turn 2: {"answer":"You talked about Vegas across 24 messages — see the top match.","hero_index":0}
+        Turn 2: {"answer":"You sent Mom 14 photos in the last 30 days.","hero_index":null,"evidence_indices":[]}
         """
     }
 
@@ -720,6 +1082,66 @@ public extension NLAgent {
         \(scratchpad)
 
         Emit your next tool call as JSON, OR a final answer if you have enough.
+        """
+    }
+
+    /// Which tool calls are "reads" that count against the answer-after-N-reads
+    /// cap (Codex #2.4). Search + chronological reads + zoom-ins are the ones a
+    /// stuck model loops on; the one-shot stats tools (topContacts, count, …)
+    /// return a complete answer and are handled by `answerNowHint`, so they
+    /// don't count.
+    internal static func isReadTool(_ tool: String) -> Bool {
+        switch tool {
+        case "search", "readMessages", "messagesAroundTime", "context",
+             "firstMatching", "oldestMatching", "rawSearchSQL":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// System prompt for the FORCED final-answer turn (Codex #2.1 / #2.4). NO
+    /// tool catalog at all — the model's only legal move is to emit the final
+    /// answer JSON. Used after a duplicate tool call or the read-cap, so a
+    /// stuck model produces an answer from what it already gathered instead of
+    /// spinning until the iteration cap.
+    static var forcedFinalAnswerSystemPrompt: String {
+        """
+        /no_think
+        You have already gathered information about the user's iMessage history (shown in the prior tool observations). You CANNOT call any more tools. Your ONLY job now is to write the final answer from what you already have.
+
+        Read the observations above carefully and answer the user's question directly. Cite the specific messages that support your answer.
+
+        Output ONE JSON object, NOTHING else (no prose, no markdown fences, no <think>):
+        {"answer":"<2-4 sentence answer grounded in the messages you already read>","hero_index":<index of the single most important message from the most recent observation, or null>,"evidence_indices":[<indices of 2-5 messages that back up your answer>]}
+        - For a stats/ranking question (who/how-many/which), hero_index and evidence_indices may be null/[].
+        - If the observations genuinely don't contain an answer, say so honestly in `answer` and use null/[].
+        - Do NOT ask to run another search. Do NOT emit a "tool" field. Answer NOW.
+        """
+    }
+
+    /// User prompt for the forced final-answer turn: the question + the full
+    /// scratchpad of observations + the explicit "you already called X — do
+    /// not repeat it, answer now" signal (Codex #2.4).
+    static func buildForcedFinalAnswerPrompt(
+        question: String,
+        now: Date,
+        scratchpad: String,
+        reason: String
+    ) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        let today = df.string(from: now)
+        return """
+        Today's date: \(today)
+        Question: \(question)
+
+        What you've already gathered:
+        \(scratchpad)
+
+        \(reason)
+
+        Emit ONLY the final answer JSON now.
         """
     }
 

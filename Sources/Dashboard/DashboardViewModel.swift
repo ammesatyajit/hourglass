@@ -128,7 +128,11 @@ public final class DashboardViewModel {
     /// can attach to the SAME working handle instead of racing their
     /// own open against TCC's settle timing.
     public private(set) var database: ChatDatabase?
-    private var contacts: ResolvedContacts?
+    /// Exposed (read-only) so dashboard panels that need contact
+    /// resolution — Nostalgia (dormant friends, beloved-message senders)
+    /// and Social Graph (handle→person merge, node labels) — can read the
+    /// already-resolved set without re-running `ContactResolver.resolve()`.
+    public private(set) var contacts: ResolvedContacts?
     private var generation: Int = 0
 
     /// Hook fired once when the dashboard's `bootstrapIfNeeded` first

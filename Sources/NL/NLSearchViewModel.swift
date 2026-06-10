@@ -27,6 +27,14 @@
 
 import Foundation
 import Observation
+import os
+
+/// Shares the "nl-bar-rendering" category with `AppDelegate`'s logger so
+/// runtime-swap + dispatch trails line up in Console.
+private let nlBarLogger = Logger(
+    subsystem: "com.satyajit.bettermessages",
+    category: "nl-bar-rendering"
+)
 
 @Observable
 @MainActor
@@ -56,7 +64,7 @@ public final class NLSearchViewModel {
     public private(set) var runtimeNotReadyReason: String?
 
     /// Display label for the active runtime — surfaced in the trace footer
-    /// ("Powered by Gemma 4 E2B IT" or "Powered by StubLLMRuntime"). Updates
+    /// ("Powered by Qwen3 1.7B" or "Powered by StubLLMRuntime"). Updates
     /// when `replaceAgent` swaps the runtime.
     public private(set) var runtimeLabel: String
 
@@ -185,16 +193,52 @@ public final class NLSearchViewModel {
             return
         }
 
-        // If the runtime isn't ready, fall through to whatever the current
-        // agent will do (the stub answers; MLX would throw .notReady). The
-        // graceful-degradation policy is "always answer something" — the
-        // agent's fallback path runs even when the LLM fails — so we don't
-        // hard-block here.
+        // HARD BLOCK on the stub runtime. The previous policy was
+        // "always answer something" — let the stub answer with a
+        // canned/rule-based plan if MLX isn't ready. In practice the
+        // stub silently returned degraded results that LOOKED like real
+        // LLM answers (e.g. "find my argument with annika" → "i cant
+        // find my airpods" hero, see plans.md 2026-05-27). User would
+        // rather wait for the real thing than get a wrong-but-confident
+        // answer.
+        //
+        // Three cases:
+        //   1. MLX runtime → run normally.
+        //   2. Stub + cache on disk → kick the load if it isn't already
+        //      in flight, stash the query, surface "loading" state. The
+        //      observer in AppDelegate will call `replaceAgent` when MLX
+        //      is ready; `replaceAgent` re-fires `pendingQuery` so the
+        //      user's query runs on the real LLM as soon as it can.
+        //   3. Stub + no cache → surface the first-run download prompt.
+        //      The bar's CTA wires through to `beginDownload()`.
+        let runtimeIsStub = agent.runtime is StubLLMRuntime
+        if runtimeIsStub {
+            pendingQuery = q
+            let cacheAvailable = modelDownloader?.isModelCached ?? false
+            let containerLoaded = modelDownloader?.modelContainer != nil
+            if cacheAvailable, !containerLoaded {
+                // Idempotent — if download is already running this is a
+                // no-op. Otherwise kicks off the memory-map.
+                modelDownloader?.beginDownload()
+                runtimeNotReadyReason = "Loading local AI model — your query will run as soon as it's ready."
+                nlBarLogger.info("ask: stub runtime + cache present → BLOCKED on MLX load; query stashed")
+            } else if !cacheAvailable {
+                runtimeNotReadyReason = "Download the local AI model (~1 GB) to enable natural-language search."
+                nlBarLogger.notice("ask: stub runtime + no cache → BLOCKED on first-run download; query stashed")
+            } else {
+                // Cache + loaded container but agent hasn't swapped yet
+                // — `observeDownloaderForRuntimeSwap` will fire any moment.
+                runtimeNotReadyReason = "Model loaded — starting up…"
+                nlBarLogger.info("ask: stub runtime + container ready → swap imminent; query stashed")
+            }
+            return
+        }
+
+        // MLX path: the runtime declares `isReady` = true once the
+        // container is mapped. If something briefly reports not-ready
+        // (e.g. mid-swap), stash + retry exactly the same way.
         let ready = await agent.runtime.isReady
         if !ready {
-            // Record the query so we can re-fire it after the download
-            // completes. Then surface the not-ready reason so the bar
-            // shows the first-run prompt instead of an empty trace.
             pendingQuery = q
             runtimeNotReadyReason = Self.notReadyReason(for: modelDownloader?.state)
             return
@@ -217,12 +261,26 @@ public final class NLSearchViewModel {
         // trying to lex a search out of a stats question.
         let agentRef = agent
         let useToolLoop = !(agentRef.runtime is StubLLMRuntime)
+        // L4 diagnostic — one log line per query identifies which path
+        // ran. Console filter: `subsystem:com.satyajit.bettermessages
+        // category:nl-bar-rendering`. Critical when "NL search doesn't
+        // work" reports come in: was the runtime ready, was the tool
+        // loop used, etc.
+        nlBarLogger.info("ask: runtime=\(String(describing: type(of: agentRef.runtime)), privacy: .public) useToolLoop=\(useToolLoop, privacy: .public) query=\"\(q, privacy: .public)\"")
         let task = Task { [weak self] in
             let answer: NLQueryResult
             if useToolLoop {
                 answer = await agentRef.answerWithToolLoop(userQuery: q, now: now)
             } else {
                 answer = await agentRef.answer(userQuery: q, now: now)
+            }
+            // BATTERY: the whole query (all ReAct turns) is done — release
+            // the runtime's transient GPU buffers so the device idles
+            // instead of holding a warm Metal working set after the answer
+            // is on screen. No-op for the stub. Skip if a newer query
+            // already superseded this one (it'll release when IT finishes).
+            if !Task.isCancelled {
+                await agentRef.runtime.releaseResources()
             }
             await MainActor.run {
                 guard let self else { return }
@@ -247,5 +305,24 @@ public final class NLSearchViewModel {
         result = nil
         partialTrace = []
         isAsking = false
+    }
+
+    /// Cancel any in-flight inference and wait (bounded) for it to unwind — called
+    /// on app termination. MLX runs generation on a background thread; if `exit()`
+    /// begins tearing down MLX's C++ scheduler / compiler-cache statics while a
+    /// generation is still live, that thread dereferences freed state →
+    /// EXC_BAD_ACCESS on quit (observed crash). Cancelling first lets the generate
+    /// loop observe `Task.isCancelled` and unwind off the GPU; we await its
+    /// completion (capped by `timeout` so quit never hangs) before returning.
+    public func prepareForTermination(timeout: Duration = .seconds(3)) async {
+        guard let task = currentTask else { return }
+        currentTask = nil
+        task.cancel()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await task.value }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            _ = await group.next()   // whichever first: clean unwind or the cap
+            group.cancelAll()
+        }
     }
 }

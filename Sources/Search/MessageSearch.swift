@@ -403,6 +403,93 @@ public struct MessageSearch: Sendable {
         return results
     }
 
+    // MARK: - SQL aggregate count (Perf Pass C, Codex #4 step ②)
+
+    /// Count matching messages with a true SQL `COUNT(*)` — WITHOUT
+    /// materializing (and body-decoding) every matching row, which is what
+    /// `search(...).count` does.
+    ///
+    /// **Parity contract — why this returns `Int?`:** `search()` runs a
+    /// Swift-side refinement (`PhraseQuery.matches(body:)` on the decoded body,
+    /// plus the `person` participant filter) AFTER the SQL pre-filter, so a raw
+    /// `COUNT(*)` over the SQL WHERE clause is in general an OVER-count (the SQL
+    /// phrase pre-filter is a deliberate superset, refined in Swift). The ONLY
+    /// case where `COUNT(*)` is byte-for-byte equal to `search(...).count` is
+    /// when there is **no Swift refinement at all** — i.e. the parsed phrase AST
+    /// is empty (a filter-only query like `from:me type:image last:30d`) AND no
+    /// `person` filter is supplied. In that case every SQL row becomes a Result
+    /// (the `if !phraseAST.isEmpty` guard in `search` is skipped) and the
+    /// reactions/type post-processing only rewrites rows, never adds/removes
+    /// them — so the cardinality is identical.
+    ///
+    /// Returns `nil` when the query is NOT safely aggregable (non-empty phrase
+    /// AST, a `person` filter, or invalid regex). Callers MUST fall back to
+    /// `search(...).count` in that case to preserve exact behavior.
+    ///
+    /// The WHERE clause is built from the SAME clause helpers `search()` uses,
+    /// so the predicate is identical — only the projection (`COUNT(*)` vs the
+    /// row SELECT) and the absence of `ORDER BY`/`LIMIT` differ.
+    func aggregateCount(
+        phrase: String,
+        person: Contact? = nil,
+        dateRange: ClosedRange<Date>? = nil,
+        now: Date = Date(),
+        caseSensitive: Bool = false
+    ) throws -> Int? {
+        // A `person` filter is applied Swift-side (it needs participant
+        // resolution), so it can't be pushed into a COUNT safely.
+        guard person == nil else { return nil }
+
+        let parsed = Self.parseQuery(phrase, contacts: contacts, now: now)
+        let phraseAST = try PhraseQuery.parse(parsed.freeText, caseSensitive: caseSensitive)
+        // The decisive gate: any free-text needle means a Swift body refinement
+        // would run, so SQL COUNT would over-count. Bail to the materialized path.
+        guard phraseAST.isEmpty else { return nil }
+
+        // Contradictory date constraints → zero rows (mirrors `search`).
+        if parsed.dateConstraintIsEmpty { return 0 }
+        let combinedConstraint = Self.intersectConstraint(dateRange, parsed.dateRange)
+        if case .empty = combinedConstraint { return 0 }
+
+        // Same WHERE clause builders + arg order as `search()`. The phrase
+        // clause is empty (AST is empty) so it contributes nothing — identical
+        // to `search`'s emitted SQL minus the SELECT/ORDER/LIMIT.
+        let (dateSQL, dateArgs) = Self.dateClause(constraint: combinedConstraint)
+        let (chatSQL, chatArgs) = Self.chatClause(parsed.chatFilters, contacts: contacts)
+        let (fromSQL, fromArgs) = Self.fromClause(parsed.fromFilters, contacts: contacts)
+        let (toSQL, toArgs) = Self.toClause(parsed.toFilters, contacts: contacts)
+        let (withSQL, withArgs) = Self.withClause(parsed.withFilters, contacts: contacts)
+        let (reactionsSQL, reactionsArgs) = Self.reactionsClause(parsed.reactionFilters)
+        let typeSQL = Self.typeClause(parsed.typeFilters)
+
+        let sql = """
+            SELECT COUNT(*) AS c
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat ch ON ch.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON h.ROWID = m.handle_id
+            WHERE m.associated_message_type = 0
+              \(dateSQL)
+              \(chatSQL)
+              \(fromSQL)
+              \(toSQL)
+              \(withSQL)
+              \(reactionsSQL)
+              \(typeSQL)
+            """
+
+        var args: [DatabaseValueConvertible] = dateArgs
+        args.append(contentsOf: chatArgs)
+        args.append(contentsOf: fromArgs)
+        args.append(contentsOf: toArgs)
+        args.append(contentsOf: withArgs)
+        args.append(contentsOf: reactionsArgs)
+
+        return try database.dbQueue.read { db in
+            try Int.fetchOne(db, sql: sql, arguments: StatementArguments(args)) ?? 0
+        }
+    }
+
     // MARK: - Helpers
 
     /// One reaction-related filter parsed from a `reactions:` token.

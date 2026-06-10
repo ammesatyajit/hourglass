@@ -1,0 +1,12 @@
+{
+  "data" : [
+    {
+      "idiom" : "universal",
+      "filename" : "baseline_en_unigrams.txt"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
