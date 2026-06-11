@@ -13,13 +13,9 @@
 //    • `hiddenFromNostalgia` — the persisted set the user controls directly.
 //      Add anyone (`hide`), remove anyone (`unhide`). Every surface filters on
 //      it. This is the ONLY thing that actually suppresses people.
-//    • `dismissedHideSuggestions` — separate persisted set. When the advisory
-//      `RomanticDetector` suggests "hide this very-close person?" and the user
-//      says "no, keep them," we record that here so we never re-ask. It does
-//      NOT hide anyone.
 //
-//  Nothing auto-hides. `RomanticDetector` is advisory only — it proposes;
-//  the user disposes. See `NostalgiaViewModel.suggestedHides`.
+//  Nothing auto-hides, and nothing suggests hiding (the advisory prompt was
+//  removed in 0.3.1 — people surface naturally; one tap hides anyone forever).
 //
 //  Keys are the `ContactDailySeries.key` (resolved display name when known,
 //  raw handle otherwise) — the same identity the detectors rank on, so a hide
@@ -37,10 +33,6 @@ public final class NostalgiaDismissals: @unchecked Sendable {
     /// the original dormant-only meaning; now the unified hidden set. Kept the
     /// same string so existing on-disk hides carry forward.)
     public static let storageKey = "hourglass.nostalgia.dismissedDormantKeys"
-    /// UserDefaults key for hide-suggestions the user declined (so we don't
-    /// re-ask). Distinct from the hidden set — declining a suggestion keeps the
-    /// person visible.
-    public static let suggestionStorageKey = "hourglass.nostalgia.dismissedHideSuggestions"
 
     private let defaults: UserDefaults
     private let lock = NSLock()
@@ -100,32 +92,13 @@ public final class NostalgiaDismissals: @unchecked Sendable {
         return friends.filter { !hidden.contains($0.key) }
     }
 
-    // MARK: - Declined hide-suggestions (advisory bookkeeping)
-
-    /// Hide-suggestions the user has declined (so the prompt isn't re-shown).
-    public func dismissedSuggestionKeys() -> Set<String> {
-        lock.lock(); defer { lock.unlock() }
-        let arr = defaults.array(forKey: Self.suggestionStorageKey) as? [String] ?? []
-        return Set(arr)
-    }
-
-    /// Record that the user declined the hide-suggestion for `key`. Idempotent.
-    /// Does NOT hide the person — only stops us re-asking.
-    public func dismissHideSuggestion(_ key: String) {
-        lock.lock(); defer { lock.unlock() }
-        var set = Set(defaults.array(forKey: Self.suggestionStorageKey) as? [String] ?? [])
-        guard !set.contains(key) else { return }
-        set.insert(key)
-        defaults.set(set.sorted(), forKey: Self.suggestionStorageKey)
-    }
 
     // MARK: - Reset
 
-    /// Clear ALL hides + declined suggestions — exposed for a possible "reset"
-    /// affordance and for test teardown.
+    /// Clear ALL hides — exposed for a possible "reset" affordance and for
+    /// test teardown.
     public func reset() {
         lock.lock(); defer { lock.unlock() }
         defaults.removeObject(forKey: Self.storageKey)
-        defaults.removeObject(forKey: Self.suggestionStorageKey)
     }
 }

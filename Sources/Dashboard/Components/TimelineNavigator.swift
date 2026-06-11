@@ -89,9 +89,11 @@ struct TimelineNavigator: View {
     static let handleVisibleWidth: CGFloat = 4
     static let handleVisibleHeight: CGFloat = 24
 
-    /// Handle hit area — 16pt wide so the cursor can grab the edge
-    /// comfortably without precisely landing on the 4pt visual.
-    static let handleHitWidth: CGFloat = 16
+    /// Handle hit area — wide enough that grabbing the edge never needs
+    /// pixel-precision on the 4pt visual. Bumped 16→24 in 0.3.1: on the
+    /// non-liquid-glass render path the effective grab zone read smaller
+    /// (users reported the handles "almost impossible to drag").
+    static let handleHitWidth: CGFloat = 24
 
     /// Pill body's vertical inset from the strip edges — leaves room for
     /// the sparkline's gradient to peek above/below the pill.

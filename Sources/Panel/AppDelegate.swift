@@ -616,7 +616,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         _ = stage("firstMessages") { try FirstMessageLoader(database: database, contacts: contacts).load(series: agg.contactSeries) }
                     }
                     _ = stage("funnyMoments") { try FunnyMomentsLoader(database: database, contacts: contacts).load() }
-                    _ = stage("romantic") { try RomanticDetector.flaggedContactNames(database: database, contacts: contacts) }
                 }
 
                 emit("---- VERNACULAR Phase 1 (pure stats) ----")

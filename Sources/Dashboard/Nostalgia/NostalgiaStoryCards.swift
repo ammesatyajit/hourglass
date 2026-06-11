@@ -118,6 +118,11 @@ struct OnThisDayMomentCard: View {
                 if let quote = quoteText {
                     QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
                         .padding(.top, 2)
+                        .revealsInMessages(isAttachment ? nil : MessageRevealTarget(
+                            messageGUID: nil, chatGUID: nil, body: quote,
+                            senderName: moment.person ?? "", isFromMe: false,
+                            date: moment.date
+                        ))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -190,8 +195,17 @@ struct ChatStoryRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
-            .fill(Color.contentBackground))
+        .background(
+            RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                .fill(Color.contentBackground)
+        )
+        .background(
+            // The chat's whole history as a quiet area chart behind the row.
+            // Every row shares ONE x-axis (the global corpus span), so where
+            // a chat sits in your life reads at a glance.
+            ActivitySparkline(samples: story.activity)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.large, style: .continuous))
+        )
         .overlay(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
             .strokeBorder(Color.hairline, lineWidth: 1))
         .animation(reduceMotion ? nil : .bmDefault, value: expanded)
@@ -403,6 +417,11 @@ private struct MomentTimelineRow: View {
 
                 if let quote = quoteText {
                     QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
+                        .revealsInMessages(isAttachment ? nil : MessageRevealTarget(
+                            messageGUID: nil, chatGUID: nil, body: quote,
+                            senderName: moment.person ?? "", isFromMe: false,
+                            date: moment.date
+                        ))
                 }
             }
             .padding(.bottom, isLast ? 0 : Space.lg)
@@ -424,6 +443,36 @@ private struct MomentTimelineRow: View {
         if !t.isEmpty { return t }
         // Empty body on a quotable kind == an attachment; mark it.
         return (moment.kind == .peakReaction || moment.kind == .origin) ? "Attachment" : nil
+    }
+}
+
+// MARK: - Row-background activity sparkline
+
+/// A static area chart of one chat's message frequency, drawn as the row
+/// background. Square-root scaled so a single monster day doesn't flatten
+/// the rest of the history into invisibility. Hit-testing disabled — it's
+/// pure backdrop.
+struct ActivitySparkline: View {
+    let samples: [Double]
+
+    var body: some View {
+        Canvas { ctx, size in
+            guard samples.count > 1, let rawMax = samples.max(), rawMax > 0 else { return }
+            let maxV = rawMax.squareRoot()
+            let stepX = size.width / CGFloat(samples.count - 1)
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: size.height))
+            for (i, v) in samples.enumerated() {
+                let h = CGFloat(v.squareRoot() / maxV) * size.height * 0.9
+                path.addLine(to: CGPoint(x: CGFloat(i) * stepX, y: size.height - h))
+            }
+            path.addLine(to: CGPoint(x: size.width, y: size.height))
+            path.closeSubpath()
+            ctx.fill(path, with: .color(Color.accentColor.opacity(0.07)))
+            ctx.stroke(path, with: .color(Color.accentColor.opacity(0.12)), lineWidth: 1)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 

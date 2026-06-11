@@ -178,8 +178,10 @@ struct VernacularPage: View {
         StatPanel(title: "The words that are yours", subtitle: "Finding the words that are uniquely yours…") {
             VStack(spacing: Space.md) {
                 ProgressView().controlSize(.large)
-                Text("Reading your conversations…")
+                Text("Reading every message on this Mac — the first pass takes a few minutes. It's all on-device; nothing leaves your computer. This page fills in by itself when it's done.")
                     .font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
             }
             .frame(maxWidth: .infinity).frame(height: 200)
         }
@@ -404,27 +406,48 @@ private struct VernacularProfileListsView: View {
         StatPanel(title: "Your vernacular", subtitle: subtitle) {
             if visibleCount > 0 {
                 VStack(alignment: .leading, spacing: Space.lg) {
-                    // The hero three — Phrases | Reclaimed | Words —
+                    // The hero three — Sentence frames | Words | Expressions —
                     // side by side like Overview's leaderboards, each an
-                    // internally-scrollable column.
+                    // internally-scrollable column. (0.3.1 naming for the
+                    // general public: "Words" = repurposed normal English
+                    // (was "Reclaimed words"; tint moved off orange so it no
+                    // longer collides with the gave-to-someone arrows);
+                    // "Expressions" = the invented/slang tokens (was "Words").)
                     HStack(alignment: .top, spacing: Space.lg) {
-                        if !visiblePhrases.isEmpty {
-                            phraseFacet(
-                                title: "Phrases",
-                                glyph: "text.quote",
-                                tint: .teal,
-                                items: visiblePhrases,
-                                scrollHeight: columnHeight
-                            )
+                        if !visibleTemplates.isEmpty {
+                            VernProfileFacet(
+                                glyph: "square.dashed",
+                                title: "Sentence frames",
+                                count: visibleTemplates.count,
+                                tint: .mint
+                            ) {
+                                ScrollView(.vertical) {
+                                    LazyVStack(alignment: .leading, spacing: Space.sm) {
+                                        ForEach(visibleTemplates) { item in
+                                            VernProfileSurfaceRow(
+                                                title: item.pattern,
+                                                metric: "\(item.counts.userMessages.formatted())x",
+                                                subtitle: templateSubtitle(item),
+                                                detail: templateDetail(item),
+                                                examples: item.examples,
+                                                pills: item.topFills.prefix(5).map { ($0.fill, $0.count) },
+                                                tint: .mint,
+                                                onHide: { onHide(item.pattern) }
+                                            )
+                                        }
+                                    }
+                                }
+                                .frame(height: columnHeight)
+                            }
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
 
                         if !visibleReclaimedWords.isEmpty {
                             VernProfileFacet(
                                 glyph: "arrow.triangle.2.circlepath",
-                                title: "Reclaimed words",
+                                title: "Words",
                                 count: visibleReclaimedWords.count,
-                                tint: .orange
+                                tint: .yellow
                             ) {
                                 ScrollView(.vertical) {
                                     LazyVStack(alignment: .leading, spacing: Space.sm) {
@@ -436,7 +459,7 @@ private struct VernacularProfileListsView: View {
                                                 detail: reclaimedDetail(item),
                                                 examples: item.examples,
                                                 pills: item.topCollocationPartner.map { [($0, Int((item.collocation * 100).rounded()))] } ?? [],
-                                                tint: .orange,
+                                                tint: .yellow,
                                                 onHide: { onHide(item.surface) }
                                             )
                                         }
@@ -449,7 +472,7 @@ private struct VernacularProfileListsView: View {
 
                         if !visibleWords.isEmpty {
                             phraseFacet(
-                                title: "Words",
+                                title: "Expressions",
                                 glyph: "quote.bubble.fill",
                                 tint: .purple,
                                 items: visibleWords,
@@ -460,38 +483,23 @@ private struct VernacularProfileListsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    // The quieter lists — sentence frames + circle slang — tucked
-                    // behind a disclosure so the panel ends calm.
-                    if !visibleTemplates.isEmpty || !visibleCircleSlang.isEmpty {
+                    // The quieter lists — common phrases + circle slang —
+                    // tucked behind a disclosure so the panel ends calm.
+                    if !visiblePhrases.isEmpty || !visibleCircleSlang.isEmpty {
                         VernDisclosure(
-                            icon: "square.dashed",
-                            tint: .mint,
+                            icon: "text.quote",
+                            tint: .teal,
                             title: "More of your words",
-                            subtitle: "Sentence frames and the slang your circle shares"
+                            subtitle: "Common phrases and the slang your circle shares"
                         ) {
                             VStack(alignment: .leading, spacing: Space.lg) {
-                                if !visibleTemplates.isEmpty {
-                                    VernProfileFacet(
-                                        glyph: "square.dashed",
-                                        title: "Sentence frames",
-                                        count: visibleTemplates.count,
-                                        tint: .mint
-                                    ) {
-                                        VStack(alignment: .leading, spacing: Space.sm) {
-                                            ForEach(visibleTemplates) { item in
-                                                VernProfileSurfaceRow(
-                                                    title: item.pattern,
-                                                    metric: "\(item.counts.userMessages.formatted())x",
-                                                    subtitle: templateSubtitle(item),
-                                                    detail: templateDetail(item),
-                                                    examples: item.examples,
-                                                    pills: item.topFills.prefix(5).map { ($0.fill, $0.count) },
-                                                    tint: .mint,
-                                                    onHide: { onHide(item.pattern) }
-                                                )
-                                            }
-                                        }
-                                    }
+                                if !visiblePhrases.isEmpty {
+                                    phraseFacet(
+                                        title: "Common phrases",
+                                        glyph: "text.quote",
+                                        tint: .teal,
+                                        items: visiblePhrases
+                                    )
                                 }
 
                                 if !visibleCircleSlang.isEmpty {

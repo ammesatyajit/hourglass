@@ -31,21 +31,14 @@
 //                                                       onThisDayMoments]
 //        • firstMessages   (FirstMessageLoader)       [folded into origin]
 //        • funnyMoments    (FunnyMomentsLoader)       [folded into peakReaction]
-//      • suggestedHides    (RomanticDetector, ADVISORY)
 //
 //  HIDE MODEL (sensitivity guardrail — the user stays in control):
 //    `hiddenFromNostalgia` is the ONE persisted, user-controlled set that
 //    actually suppresses people. EVERY surface above filters on it. The user
 //    can `hide(_:)` ANYONE and `unhide(_:)` anyone — persisted to UserDefaults
-//    via `NostalgiaDismissals`.
-//
-//    `RomanticDetector` is ADVISORY ONLY: it never hides anyone. It yields
-//    flagged names; we expose `suggestedHides` = flagged − alreadyHidden −
-//    declinedSuggestions. The UI gently OFFERS these ("you two were very close
-//    — hide from reminders & nostalgia?"); confirming calls `hide(_:)`,
-//    declining calls `dismissHideSuggestion(_:)`. Nothing is hidden until the
-//    user confirms. The suggestion copy must stay neutral — we never label
-//    anyone "ex/romantic" anywhere.
+//    via `NostalgiaDismissals`. Nothing is ever hidden automatically, and the
+//    app never suggests hiding anyone (the old advisory prompt was removed in
+//    0.3.1 — people surface naturally; manual hide handles the rest).
 //
 
 import Foundation
@@ -66,7 +59,7 @@ public final class NostalgiaViewModel {
     /// REKINDLE reminders — heavy 1:1 correspondents (upper-quartile by volume)
     /// you've gone quiet with for ≥1 month. Heaviest first. Obeys the SAME hide
     /// controls as every other surface: SUPPRESSED for anyone in
-    /// `hiddenFromNostalgia` AND anyone the (advisory) `RomanticDetector` flags
+    /// `hiddenFromNostalgia`
     /// (no "say hi?" nudge for an ex). Built by `RekindleBuilder`.
     public private(set) var rekindleReminders: [RekindleReminder] = []
 
@@ -83,11 +76,6 @@ public final class NostalgiaViewModel {
     /// The user-controlled hidden set (resolved contact names / series keys).
     /// Observable so the UI reflects hides/un-hides live.
     public private(set) var hiddenFromNostalgia: Set<String> = []
-    /// Advisory hide suggestions (romantic-flagged, minus already-hidden, minus
-    /// declined). The UI offers these for confirmation — nothing is hidden
-    /// until the user acts.
-    public private(set) var suggestedHides: [String] = []
-
     public private(set) var isLoading: Bool = false
     public private(set) var hasLoadedOnce: Bool = false
     /// Non-fatal error string (e.g. a loader threw). The panel degrades
@@ -114,8 +102,6 @@ public final class NostalgiaViewModel {
     private var allFirstMessages: [FirstMessage] = []
     private var allEras: [Era] = []
     private var allFunnyMoments: [FunnyMoment] = []
-    /// Raw romantic-flagged names (advisory) before subtracting hidden/declined.
-    private var flaggedNames: [String] = []
 
     private var generation = 0
 
@@ -162,8 +148,7 @@ public final class NostalgiaViewModel {
         )
         refilter()
 
-        // ---- Async, DB-backed: beloved, on-this-day, first messages, funny,
-        //      and the advisory romantic flag ----
+        // ---- Async, DB-backed: beloved, on-this-day, first messages, funny ----
         let myGen = generation &+ 1
         generation = myGen
         isLoading = true
@@ -185,7 +170,6 @@ public final class NostalgiaViewModel {
             var loadedOnThisDay: [OnThisDayMemory] = []
             var loadedFirst: [FirstMessage] = []
             var loadedFunny: [FunnyMoment] = []
-            var flagged: [String] = []
             var errors: [String] = []
 
             // PER-CHAT timelines (the primary surface).
@@ -217,9 +201,6 @@ public final class NostalgiaViewModel {
             do {
                 loadedFunny = try FunnyMomentsLoader(database: database, contacts: contacts).load()
             } catch { errors.append("Funny moments: \(error.localizedDescription)") }
-            do {
-                flagged = try RomanticDetector.flaggedContactNames(database: database, contacts: contacts)
-            } catch { errors.append("Suggestions: \(error.localizedDescription)") }
 
             await self?.apply(
                 chatStories: loadedStories,
@@ -228,7 +209,6 @@ public final class NostalgiaViewModel {
                 onThisDay: loadedOnThisDay,
                 firstMessages: loadedFirst,
                 funnyMoments: loadedFunny,
-                flaggedNames: flagged,
                 error: errors.isEmpty ? nil : errors.joined(separator: "; "),
                 generation: myGen
             )
@@ -242,7 +222,6 @@ public final class NostalgiaViewModel {
         onThisDay: [OnThisDayMemory],
         firstMessages: [FirstMessage],
         funnyMoments: [FunnyMoment],
-        flaggedNames: [String],
         error: String?,
         generation: Int
     ) {
@@ -253,7 +232,6 @@ public final class NostalgiaViewModel {
         self.allOnThisDay = onThisDay
         self.allFirstMessages = firstMessages
         self.allFunnyMoments = funnyMoments
-        self.flaggedNames = flaggedNames
         self.loadError = error
         self.isLoading = false
         self.hasLoadedOnce = true
@@ -277,13 +255,6 @@ public final class NostalgiaViewModel {
         dismissals.unhide(name)
         hiddenFromNostalgia = dismissals.hiddenKeys()
         refilter()
-    }
-
-    /// Record that the user DECLINED a hide suggestion (keeps them visible; we
-    /// just stop re-asking). Persists + recomputes `suggestedHides`.
-    public func dismissHideSuggestion(_ name: String) {
-        dismissals.dismissHideSuggestion(name)
-        recomputeSuggestions()
     }
 
     /// Backward-compatible affordance: the dormant-friend card's "hide" button.
@@ -320,15 +291,10 @@ public final class NostalgiaViewModel {
         )
 
         // --- Rekindle reminders ---
-        // Suppress the user-hidden set AND anyone the (advisory) RomanticDetector
-        // flags. Unlike the rest of the app where the romantic flag is purely
-        // advisory (offered as a hide suggestion), rekindle nudges must NEVER
-        // resurface a flagged person — a "say hi?" reminder for an ex is exactly
-        // what the user told us is hurtful. Both reconcile on resolved name.
-        let flaggedSet = Set(flaggedNames)
-        rekindleReminders = allRekindle.filter {
-            !hidden.contains($0.name) && !flaggedSet.contains($0.name)
-        }
+        // Only the user-controlled hidden set suppresses people (0.3.1: the
+        // automatic romantic-flag suppression was removed with the detector —
+        // people surface naturally and one tap hides anyone, permanently).
+        rekindleReminders = allRekindle.filter { !hidden.contains($0.name) }
 
         // --- Legacy generic surfaces ---
         dormantFriends = allDormant.filter { !hidden.contains($0.key) }
@@ -355,8 +321,6 @@ public final class NostalgiaViewModel {
             if kept.count == memory.messages.count { return memory }
             return OnThisDayMemory(window: memory.window, messages: kept, totalThatDay: memory.totalThatDay)
         }
-
-        recomputeSuggestions()
     }
 
     /// A surfaced message "involves" a hidden person if it's a 1:1 with them
@@ -401,13 +365,6 @@ public final class NostalgiaViewModel {
         }
         out.sort { $0.date < $1.date }
         return out
-    }
-
-    /// suggestedHides = flagged − alreadyHidden − declined.
-    private func recomputeSuggestions() {
-        let hidden = hiddenFromNostalgia
-        let declined = dismissals.dismissedSuggestionKeys()
-        suggestedHides = flaggedNames.filter { !hidden.contains($0) && !declined.contains($0) }
     }
 
     // MARK: - Convenience

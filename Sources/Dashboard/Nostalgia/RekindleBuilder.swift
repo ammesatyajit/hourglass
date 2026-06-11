@@ -21,7 +21,7 @@
 //
 //  SUPPRESSION is NOT done here — it flows through `NostalgiaViewModel.refilter`,
 //  which drops anyone in the user-controlled `hiddenFromNostalgia` set AND anyone
-//  the (advisory) `RomanticDetector` flags. This builder returns the FULL
+//  the user has hidden. This builder returns the FULL
 //  eligible list so the VM can apply the same hide controls as every other
 //  surface.
 //

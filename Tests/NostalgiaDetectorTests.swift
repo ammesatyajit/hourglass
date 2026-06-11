@@ -405,75 +405,6 @@ final class NostalgiaDetectorTests: XCTestCase {
         XCTAssertEqual(built.map(\.key), ["Big"], "low-volume contact filtered; big one kept")
     }
 
-    // MARK: - RomanticDetector (pure decision — ADVISORY)
-
-    /// Signals matching the user's known ex (Shreya): heavy reciprocal "I love
-    /// you" + a strong nightly/longing routine → romantic.
-    func testRomantic_flagsHeavyMutualLovePlusRoutine() {
-        var s = RomanticDetector.Signals()
-        s.total = 22228; s.myLoveYou = 11; s.theirLoveYou = 12
-        s.miss = 20; s.goodnight = 65; s.hearts = 34; s.babe = 5
-        XCTAssertEqual(s.reciprocalLove, 11)
-        XCTAssertTrue(RomanticDetector.isRomantic(s))
-    }
-
-    /// The reciprocal-love gate (>=5) is REQUIRED. An affectionate friend who
-    /// says "babe" and uses hearts but rarely says "I love you" is NOT flagged
-    /// (the Mason/Venkat shape).
-    func testRomantic_platonicAffectionNotFlagged() {
-        var mason = RomanticDetector.Signals()
-        mason.total = 7838; mason.myLoveYou = 1; mason.theirLoveYou = 3
-        mason.babe = 12; mason.hearts = 20; mason.goodnight = 8
-        XCTAssertFalse(RomanticDetector.isRomantic(mason), "babe×12 but recipLove 1 → platonic")
-
-        var venkat = RomanticDetector.Signals()
-        venkat.total = 31487; venkat.myLoveYou = 1; venkat.theirLoveYou = 0
-        venkat.babe = 7; venkat.goodnight = 50
-        XCTAssertFalse(RomanticDetector.isRomantic(venkat), "50 goodnights but recipLove 0 → platonic")
-    }
-
-    /// A standalone goodnight routine without reciprocal love must NOT flag —
-    /// platonic friends rack up goodnights. And recipLove>=5 alone (no
-    /// corroborating signal) is also not enough.
-    func testRomantic_gateAndCorroborationBothRequired() {
-        var goodnightsOnly = RomanticDetector.Signals()
-        goodnightsOnly.total = 5000; goodnightsOnly.goodnight = 80
-        XCTAssertFalse(RomanticDetector.isRomantic(goodnightsOnly))
-
-        var loveNoCorroboration = RomanticDetector.Signals()
-        loveNoCorroboration.total = 5000; loveNoCorroboration.myLoveYou = 9; loveNoCorroboration.theirLoveYou = 9
-        loveNoCorroboration.miss = 1; loveNoCorroboration.goodnight = 2; loveNoCorroboration.hearts = 1
-        XCTAssertFalse(RomanticDetector.isRomantic(loveNoCorroboration), "recipLove≥5 alone isn't enough")
-    }
-
-    /// `flagged(from:)` applies the min-volume floor and sorts.
-    func testRomantic_flaggedAppliesVolumeFloorAndSorts() {
-        var ex = RomanticDetector.Signals()
-        ex.total = 9000; ex.myLoveYou = 6; ex.theirLoveYou = 7; ex.miss = 15
-        var tinyButLovey = RomanticDetector.Signals()    // below the 300 floor
-        tinyButLovey.total = 50; tinyButLovey.myLoveYou = 6; tinyButLovey.theirLoveYou = 6; tinyButLovey.miss = 15
-        let flagged = RomanticDetector.flagged(from: ["Zara Ex": ex, "Tiny": tinyButLovey])
-        XCTAssertEqual(flagged, ["Zara Ex"], "below-floor contact excluded even if signals trip the rule")
-    }
-
-    /// `accumulate` counts the right signals and routes love-you by direction.
-    func testRomantic_accumulateCountsAndRoutes() {
-        var s = RomanticDetector.Signals()
-        RomanticDetector.accumulate(into: &s, body: "i love you so much", isFromMe: true)
-        RomanticDetector.accumulate(into: &s, body: "ily", isFromMe: false)
-        RomanticDetector.accumulate(into: &s, body: "goodnight babe ❤️", isFromMe: false)
-        RomanticDetector.accumulate(into: &s, body: "i miss you", isFromMe: true)
-        RomanticDetector.accumulate(into: &s, body: "begin the family beginning", isFromMe: false) // no word hits
-        XCTAssertEqual(s.total, 5)
-        XCTAssertEqual(s.myLoveYou, 1)
-        XCTAssertEqual(s.theirLoveYou, 1)
-        XCTAssertEqual(s.reciprocalLove, 1)
-        XCTAssertEqual(s.goodnight, 1)
-        XCTAssertEqual(s.babe, 1)
-        XCTAssertEqual(s.hearts, 1)
-        XCTAssertEqual(s.miss, 1)
-    }
-
     // MARK: - StreakDetector (pure)
 
     func testStreak_findsLongestConsecutiveRun() {
@@ -619,15 +550,10 @@ final class NostalgiaDetectorTests: XCTestCase {
         store.unhide("Anyone")
         XCTAssertFalse(store.isHidden("Anyone"))
 
-        // Declining a suggestion records it WITHOUT hiding.
-        store.dismissHideSuggestion("Beck Peterson")
-        XCTAssertTrue(store.dismissedSuggestionKeys().contains("Beck Peterson"))
-        XCTAssertFalse(store.isHidden("Beck Peterson"))
-
-        // Reset clears both sets.
+        // Reset clears the hidden set.
+        store.hide("Anyone")
         store.reset()
         XCTAssertTrue(store.hiddenKeys().isEmpty)
-        XCTAssertTrue(store.dismissedSuggestionKeys().isEmpty)
     }
 
     // MARK: - Reaction / MemoryMessage builders

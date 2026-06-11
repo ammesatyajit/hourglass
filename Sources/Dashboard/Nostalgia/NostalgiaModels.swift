@@ -166,11 +166,11 @@ public struct DormantFriend: Sendable, Equatable, Identifiable {
 ///
 /// Computed by `RekindleBuilder` over 1:1 chats (`chat.style = 45`). Like every
 /// Nostalgia surface it is SUPPRESSED by the user-controlled `hiddenFromNostalgia`
-/// set AND by anyone the (advisory) `RomanticDetector` flags — resurfacing an ex
+/// set — one tap hides anyone, permanently (no automatic flagging).
 /// with a "say hi?" nudge is exactly what the hide model exists to prevent.
 public struct RekindleReminder: Sendable, Equatable, Identifiable {
     /// Resolved contact display name — the SAME key scheme the hidden set /
-    /// `DormantFriend.key` / `RomanticDetector` use, so suppression reconciles
+    /// `DormantFriend.key` uses, so suppression reconciles
     /// directly.
     public let name: String
     /// Avatar bytes (raw PNG/JPEG) of the contact, when a photo exists.

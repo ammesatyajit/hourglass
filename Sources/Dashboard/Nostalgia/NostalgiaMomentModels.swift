@@ -135,6 +135,12 @@ public struct ChatStory: Sendable, Equatable, Identifiable {
     /// Notable moments, SORTED BY DATE ascending (oldest → newest), so the
     /// timeline reads top-to-bottom chronologically.
     public let moments: [NotableMoment]
+    /// Message-frequency histogram for the row's background sparkline. Buckets
+    /// span the GLOBAL corpus range (earliest message with ANYONE → latest),
+    /// not just this chat's — so every row shares one x-axis and a chat that
+    /// started last year reads as silence then a spike. Raw counts; the view
+    /// normalizes. Empty when the builder didn't compute one (old fixtures).
+    public let activity: [Double]
 
     public var id: Int64 { chatRowID }
 
@@ -147,7 +153,8 @@ public struct ChatStory: Sendable, Equatable, Identifiable {
         firstDate: Date,
         lastDate: Date,
         avatarData: Data?,
-        moments: [NotableMoment]
+        moments: [NotableMoment],
+        activity: [Double] = []
     ) {
         self.chatRowID = chatRowID
         self.title = title
@@ -158,6 +165,7 @@ public struct ChatStory: Sendable, Equatable, Identifiable {
         self.lastDate = lastDate
         self.avatarData = avatarData
         self.moments = moments
+        self.activity = activity
     }
 
     /// Copy with a different moment list (used when re-filtering by the hidden
@@ -172,7 +180,8 @@ public struct ChatStory: Sendable, Equatable, Identifiable {
             firstDate: firstDate,
             lastDate: lastDate,
             avatarData: avatarData,
-            moments: moments
+            moments: moments,
+            activity: activity
         )
     }
 }

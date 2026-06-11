@@ -69,25 +69,23 @@ public struct SocialGraphPanel: View {
     private let vibeClusterByContact: [String: Int]?
 
     @State private var viewModel: SocialGraphViewModel
-    @State private var mode: ViewMode = .graph
+    @State private var mode: ViewMode = .circles
     /// The SIGNATURE interaction's shared selection: the term currently lit up
     /// across the Vocabulary lens (picked from the term cloud above the canvas).
     /// Lives here so the cloud and the canvas stay in sync. Cleared whenever we
     /// leave the Vocabulary lens.
     @State private var selectedVocabTerm: String?
 
+    // 0.3.1: two lenses only. "Circles" IS the force graph (the old separate
+    // cluster view and the Vibe lens were cut — neither earned its tab).
     enum ViewMode: String, CaseIterable, Identifiable {
-        case graph = "Graph"
         case circles = "Circles"
         case vocabulary = "Vocabulary"
-        case vibe = "Vibe"
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .graph: return "point.3.connected.trianglepath.dotted"
-            case .circles: return "circle.grid.2x2"
+            case .circles: return "point.3.connected.trianglepath.dotted"
             case .vocabulary: return "quote.bubble"
-            case .vibe: return "waveform"
             }
         }
     }
@@ -181,15 +179,12 @@ public struct SocialGraphPanel: View {
         // If a lens's data arrives/leaves while the panel is up, keep the
         // selected mode valid — never strand the picker on a lens with no data.
         .onChange(of: hasVocabulary) { _, hasVocab in
-            if !hasVocab, mode == .vocabulary { mode = .graph }
+            if !hasVocab, mode == .vocabulary { mode = .circles }
         }
         // Leaving the Vocabulary lens clears any lit-up term so it doesn't
         // linger when the user comes back via another mode.
         .onChange(of: mode) { _, newMode in
             if newMode != .vocabulary { selectedVocabTerm = nil }
-        }
-        .onChange(of: hasVibe) { _, hasVibeData in
-            if !hasVibeData, mode == .vibe { mode = .graph }
         }
     }
 
@@ -205,30 +200,20 @@ public struct SocialGraphPanel: View {
         return spreadProfile?.graph ?? .empty
     }
 
-    /// True once the dialect clusters are available + non-empty — the gate for
-    /// offering the Vibe lens.
-    private var hasVibe: Bool {
-        guard let clusters = vibeClusters, !clusters.isEmpty,
-              let lookup = vibeClusterByContact, !lookup.isEmpty else { return false }
-        return true
-    }
-
-    /// Modes offered in the picker. Vocabulary + Vibe only appear once their
-    /// data is in, so the user never lands on an empty lens. Order stays
-    /// stable (Graph · Circles · Vocabulary · Vibe).
+    /// Modes offered in the picker. Vocabulary appears WITH a loading state
+    /// before its data is in (0.3.1: the lens used to pop in silently when
+    /// the vernacular build finished — now the tab is always there and shows
+    /// progress instead).
     private var availableModes: [ViewMode] {
-        var modes: [ViewMode] = [.graph, .circles]
-        if hasVocabulary { modes.append(.vocabulary) }
-        if hasVibe { modes.append(.vibe) }
-        return modes
+        [.circles, .vocabulary]
     }
 
     private var subtitle: String {
         if mode == .vocabulary {
+            if !hasVocabulary {
+                return "Finding the words you trade — this takes a couple of minutes on first open"
+            }
             return "The slang you traded — blue came in to you, orange spread out from you"
-        }
-        if mode == .vibe {
-            return "Colored by how each person texts — notice it doesn’t follow your circles"
         }
         if let result = viewModel.result {
             let circles = result.graph.communityCount
@@ -256,14 +241,14 @@ public struct SocialGraphPanel: View {
             VStack(alignment: .leading, spacing: Space.md) {
                 Group {
                     switch mode {
-                    case .graph:
-                        SocialGraphCanvas(result: result)
                     case .circles:
-                        CirclesView(graph: result.graph)
+                        SocialGraphCanvas(result: result)
                     case .vocabulary:
-                        vocabularyContent(result: result)
-                    case .vibe:
-                        vibeContent(result: result)
+                        if hasVocabulary {
+                            vocabularyContent(result: result)
+                        } else {
+                            vocabularyLoadingState
+                        }
                     }
                 }
                 // The Vocabulary lens stacks a term cloud above the canvas, so
@@ -273,11 +258,9 @@ public struct SocialGraphPanel: View {
                 .frame(maxWidth: .infinity)
 
                 // The community legend names circles by their biggest member —
-                // meaningful in Graph/Circles. The Vocabulary lens recolors nodes
-                // by trade direction and the Vibe lens by dialect cluster, so each
-                // draws its OWN legend inside the canvas — the community legend
-                // would be misleading there.
-                if mode != .vocabulary && mode != .vibe {
+                // meaningful in Circles. The Vocabulary lens recolors nodes by
+                // trade direction and draws its OWN legend inside the canvas.
+                if mode != .vocabulary {
                     legend(for: result.graph)
                 }
             }
@@ -372,39 +355,20 @@ public struct SocialGraphPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The Vibe lens. Recolors the SAME layout by dialect cluster. Resolves the
-    /// published clusters against the visible nodes; if nothing maps onto a
-    /// visible node (e.g. the clustered people were all capped out) it shows a
-    /// graceful note instead of an all-grey canvas.
-    @ViewBuilder
-    private func vibeContent(result: SocialGraphResult) -> some View {
-        if let clusters = vibeClusters, !clusters.isEmpty,
-           let lookup = vibeClusterByContact, !lookup.isEmpty {
-            let overlay = VibeOverlay(
-                clusters: clusters, clusterByContact: lookup, social: result.graph
-            )
-            if overlay.isEmpty {
-                vibeEmptyState
-            } else {
-                VibeGraphCanvas(result: result, overlay: overlay)
-            }
-        } else {
-            vibeEmptyState
-        }
-    }
-
-    private var vibeEmptyState: some View {
+    /// Shown inside the Vocabulary tab while the vernacular build is still
+    /// running (0.3.1: the tab used to appear only after the data landed,
+    /// which read as the feature not existing — now the wait is explicit).
+    private var vocabularyLoadingState: some View {
         VStack(spacing: Space.sm) {
-            Image(systemName: "waveform")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("No dialects to map yet")
+            ProgressView()
+                .controlSize(.large)
+            Text("Reading how your circle talks")
                 .font(.headline)
-            Text("This lens groups people by how they text. It lights up once enough of the people in your graph have a few hundred messages to read.")
+            Text("Finding the words you trade takes a couple of minutes the first time — it's scanning every message on this Mac, nothing leaves your computer. The graph fills in by itself when it's done.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
+                .frame(maxWidth: 420)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

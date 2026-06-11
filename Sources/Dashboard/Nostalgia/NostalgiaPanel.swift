@@ -76,7 +76,6 @@ public struct NostalgiaPanel: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            suggestionSection
             rekindleSection
             onThisDaySection
             chatStoriesSection
@@ -252,34 +251,6 @@ public struct NostalgiaPanel: View {
     /// `viewModel.isEmpty`, which also considers the retired surfaces.)
     private var storiesEmpty: Bool {
         viewModel.chatStories.isEmpty && viewModel.onThisDayMoments.isEmpty
-    }
-
-    // MARK: - Hide suggestions (NEUTRAL, suppression-only)
-
-    /// A gentle, neutral prompt for each `suggestedHides` name. COPY NEVER
-    /// reveals why — no "ex/romantic/partner", no badge. Confirm → hide; Keep →
-    /// dismiss the suggestion.
-    @ViewBuilder
-    private var suggestionSection: some View {
-        if !viewModel.suggestedHides.isEmpty {
-            NostalgiaSection(
-                title: "A quiet check-in",
-                subtitle: "Some people are easier not to be reminded of. You decide.",
-                systemImage: "hand.raised",
-                tint: .secondary
-            ) {
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    ForEach(viewModel.suggestedHides, id: \.self) { name in
-                        HideSuggestionCard(
-                            name: name,
-                            avatarData: avatar(for: name),
-                            onHide: { withAnimation(.bmDefault) { viewModel.hide(name) } },
-                            onKeep: { withAnimation(.bmDefault) { viewModel.dismissHideSuggestion(name) } }
-                        )
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - Hidden-people management entry

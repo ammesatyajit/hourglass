@@ -637,20 +637,17 @@ struct VocabularyGraphCanvas: View {
                 lineWidth: node.isMe ? 2 : 1
             )
 
-            // Labels. In term mode: label You + the term's people (source/adopter
-            // AND neutral users) so the term's full footprint reads; never the
-            // faded context. Otherwise: label You + traders. The hover/tap active
-            // node draws its label in the overlay layer instead.
-            let shouldLabel: Bool
-            if termActive {
-                shouldLabel = node.isMe || role != nil
-            } else {
-                shouldLabel = (node.isMe || isTrader) && !isActive
-            }
-            if shouldLabel && !(isActive && !termActive) {
+            // Labels. EVERY node gets a name (0.3.1 — clicking someone you
+            // can't identify is useless; the gray context people are exactly
+            // the ones you might want to open). Emphasis still distinguishes:
+            // You bold, traders/term-people normal, faded context dimmed.
+            // The hover/tap active node draws its label in the overlay layer.
+            let shouldLabel = !(isActive && !termActive)
+            if shouldLabel {
                 drawLabel(
                     ctx: ctx, text: node.displayName, at: p, radius: r,
-                    emphasized: node.isMe, dimmed: dim < 0.9
+                    emphasized: node.isMe,
+                    dimmed: termActive ? (role == nil && !node.isMe) : (dim < 0.9 || (!isTrader && !node.isMe))
                 )
             }
         }
@@ -732,7 +729,19 @@ struct VocabularyGraphCanvas: View {
                    influence.person.caseInsensitiveCompare(trader.displayName) == .orderedSame {
                     VocabPersonPanel(influence: influence)
                 } else if let trader = overlay.tradersByNodeID[id] {
-                    VocabTraderDetail(trader: trader)
+                    // The quick trade data renders immediately; the person's
+                    // full vocabulary profile is still building. Say so —
+                    // without the banner this read as a broken half-panel
+                    // that silently mutated seconds later.
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        HStack(spacing: Space.xs) {
+                            ProgressView().controlSize(.small)
+                            Text("Reading \(trader.displayName.split(separator: " ").first.map(String.init) ?? trader.displayName)'s messages — their words land here in a moment…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        VocabTraderDetail(trader: trader)
+                    }
                 } else if let name = node(id)?.displayName,
                           let influence = pinnedInfluence,
                           influence.person.caseInsensitiveCompare(name) == .orderedSame {
@@ -993,11 +1002,11 @@ private struct VocabPersonPanel: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             header
             if !theirReclaimed.isEmpty {
-                refBlock(title: "\(shortName)'s reclaimed words", color: .orange,
+                refBlock(title: "\(shortName)'s words", color: .yellow,
                          refs: Array(theirReclaimed.prefix(10)))
             }
             if !theirWords.isEmpty {
-                refBlock(title: "\(shortName)'s words", color: .secondary,
+                refBlock(title: "\(shortName)'s expressions", color: .secondary,
                          refs: Array(theirWords.prefix(10)))
             }
             if !influence.theyToYou.isEmpty {

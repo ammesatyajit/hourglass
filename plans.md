@@ -4581,3 +4581,37 @@ IMPLEMENTED (all in one build):
 3. **Contact mode** (subject != You): keepThreshold → 0.05; statistical rescue in decide(): verdict != keep but margin ≥ rescue.marginFloor(-0.05) AND roleSkew ≥ rescue.roleSkew(0.30) AND worldEff ≥ minWorldEff → KEEP. Knobs: vernacular.profile.reclaimed.rescue.{marginFloor,roleSkew}.
 4. **Reveal activation fix** (separate bug): MessagesGUIDReveal Spotlight-GURL path now activates Messages.app after the deep link (was revealing invisibly behind the frontmost app).
 Verification chain running: gang@Venkat + twin@Saketh + sheesh@DavidKim + OWNER-LIST REGRESSION (registry: cone #1, holy bang folded, no lag). Dumps: /tmp/verify-*-adjacency.json.
+
+---
+## SHIPPED — v0.3.0 (2026-06-09 22:10 PT)
+Released: https://github.com/ammesatyajit/hourglass/releases/tag/v0.3.0 (signed + notarized DMG, Sparkle-signed). Appcast item pushed (bb45e2c) → Pages live. Release commit 6ce5489 on main.
+Verification at ship: owner regression IDENTICAL (cone #1, "holy bang" folded #4, no lag); gang@Venkat ✓; twin@Saketh #10 ✓; sheesh@DavidKim #5 ✓; tests 698/705 (5 TZ-brittle chip'd, 2 known gem drift). Venkat category-guard re-check ran post-ship (see /tmp/venkat_recheck.log).
+OPEN for 0.3.x: Anshul "hop on" (phrase surface on person panel), Mason "___ NOT ___" frames for contacts + frame transmission, Atul realism check, substrate parity (#83) → Stage 4 speed, "min/ten min" multi-partner compounds, phraseSlangWeight judgment, contact-words register penalty (David's words list still texting-heavy).
+POST-SHIP NOTE: Venkat re-check result — gang ✓ #6, peak/aura/cooked ✓, but "max epochs"/"transformer decoder" PERSIST (#4/#5): they are PLAIN keeps (contact threshold 0.05; his ML-chat windows score slangy), NOT rescue admissions — the category guard never fires for them. Fix candidates for 0.3.1: apply categoryProximity directly to contact plain-keeps (raise effective threshold when category ≥ ~0.4), or compound-share check vs "max"/"transformer" (likely < 0.6 share, diffuse partners). Cosmetic; shipped knowingly.
+
+---
+## v0.3.1 SCOPE (operator batch, 2026-06-09 ~22:15)
+1. REMOVE the hide-exes asking feature (ex-suppression prompt) — surfaces naturally; manual hide stays.
+2. Chats list rows: static per-chat frequency sparkline as row BACKGROUND; x-axis = GLOBAL corpus range (earliest with anyone → latest).
+3. Universal double-click-to-reveal: one reusable modifier (e.g. .revealsInMessages(result)) applied everywhere a message renders.
+4. Loading affordances: "may take a few minutes" copy where loads happen; explicit per-person vernacular loading state (Mason screenshot: residual spread counters render before profile build, looks broken vs Anshul complete).
+5. Naming/colors for general public: "Words" → "Expressions"; "Reclaimed words" → "Words"; fix reclaimed-color == shared-color collision; gray graph nodes get visible names (needed to know who you're clicking).
+6. Vibe "circles" lens dead → RENAME the graph tab to "Circles"; page = Circles + Vocabulary. Vocabulary loading indicator.
+7. Optimize ⌃⌥Tab search typing lag.
+8. Liquid-glass vs non-LG parity: timeline laggy on LG; non-LG handles have wrong hit box (near-undraggable). Converge to ONE implementation.
+9. Phrases column → Sentence frames (frames promoted from disclosure); phrases rethought as TOPICS (general high-frequency phrases, not slang-filtered) — possibly under disclosure.
+10. (ANSWERED) graph words = owner universe + cheap message-scan counters; per-person profiles lazy. The Mason residual = missing loading state (item 4).
+
+---
+## Change Log — v0.3.1 batch progress (2026-06-09 ~23:10)
+DONE (all building):
+1. ✅ Hide-exes asking flow REMOVED end-to-end: suggestionSection + HideSuggestionCard UI, suggestedHides/flagged plumbing, RomanticDetector(+DB) files deleted, rekindle auto-suppression now manual-hide-only, Dismissals decline APIs gone, tests updated. (Build note: deleting files needs generate.sh + the .o-delete recovery for the staleness guard.)
+2. ✅ Chat-row activity sparklines: ChatStory.activity ([Double], 80 buckets over the GLOBAL corpus range computed in buildStories), ActivitySparkline Canvas (sqrt-scaled, accent 7%/12%, hit-test off) as ChatStoryRow background.
+3. ✅ Universal double-click reveal: Sources/Reveal/RevealOnDoubleClick.swift (.revealsInMessages(MessageRevealTarget?)) — GUID deep-link path or body-fallback (front Messages + ⌘F); wired to both Nostalgia QuoteBlock callsites. Follow-up: thread chatRowID→chatGUID for exact moment reveals; apply to more surfaces.
+4. ✅ Loading affordances: Vernacular page first-load copy ("few minutes, on-device, fills in by itself"); person-panel "Reading X's messages…" banner over the quick trade data (the Mason residual); Vocabulary tab loading state.
+5. ✅ Renames+colors: hero columns now Sentence frames (mint) | Words (was Reclaimed, yellow — off transmission-orange) | Expressions (was Words, purple); person panel matches; gray graph nodes now ALL get (dimmed) name labels.
+6. ✅ Lens consolidation: ViewMode = Circles (the force graph) + Vocabulary only; old cluster view + Vibe lens cut; Vocabulary tab always present with explicit loading state.
+9. ✅ Frames promoted to hero; Phrases demoted to "More of your words" disclosure as "Common phrases". (Topics rethink of the phrase MINER = follow-up data work.)
+8. ◐ handleHitWidth 16→24 (non-LG grab-zone complaint). FULL convergence + LG lag needs interactive profiling.
+7. ◯ Search typing lag: SpotlightResultsList.equatable() already in place; suggestions only compute under operator prefixes; debounce 150ms exists. Remaining suspect = liquid-glass material redraw per keystroke (same root as 8). Needs the operator's machine/eyes.
+NOT shipped yet — operator visual verification next, then 7/8 finish, then 0.3.1 release.

@@ -132,7 +132,8 @@ public enum ChatStoryBuilder {
     public static func buildStory(
         from chat: RawChat,
         calendar: Calendar,
-        config: Config = Config()
+        config: Config = Config(),
+        globalRange: ClosedRange<Date>? = nil
     ) -> ChatStory? {
         let msgs = chat.messages.sorted { $0.date < $1.date }
         guard msgs.count >= config.minMessages, let first = msgs.first, let last = msgs.last else {
@@ -175,8 +176,30 @@ public enum ChatStoryBuilder {
             firstDate: first.date,
             lastDate: last.date,
             avatarData: chat.avatarData,
-            moments: moments
+            moments: moments,
+            activity: activityHistogram(
+                msgs, range: globalRange ?? (first.date...last.date)
+            )
         )
+    }
+
+    /// Message counts in `Config.activityBuckets` equal time buckets over
+    /// `range` — the row-background sparkline. The range is the GLOBAL corpus
+    /// span so every row shares one x-axis.
+    static func activityHistogram(
+        _ msgs: [RawMessage],
+        range: ClosedRange<Date>,
+        buckets: Int = 80
+    ) -> [Double] {
+        let span = range.upperBound.timeIntervalSince(range.lowerBound)
+        guard span > 0, !msgs.isEmpty else { return [] }
+        var out = [Double](repeating: 0, count: buckets)
+        for m in msgs {
+            let t = m.date.timeIntervalSince(range.lowerBound) / span
+            let idx = min(buckets - 1, max(0, Int(t * Double(buckets))))
+            out[idx] += 1
+        }
+        return out
     }
 
     /// Build + rank stories for many chats. Sorted by `messageCount` desc — the
@@ -186,7 +209,14 @@ public enum ChatStoryBuilder {
         calendar: Calendar,
         config: Config = Config()
     ) -> [ChatStory] {
-        var out = chats.compactMap { buildStory(from: $0, calendar: calendar, config: config) }
+        // One shared x-axis for every sparkline: the whole corpus's span.
+        let allDates = chats.lazy.flatMap(\.messages).map(\.date)
+        let globalRange: ClosedRange<Date>? = allDates.min().flatMap { lo in
+            allDates.max().map { hi in lo...hi }
+        }
+        var out = chats.compactMap {
+            buildStory(from: $0, calendar: calendar, config: config, globalRange: globalRange)
+        }
         out.sort { lhs, rhs in
             if lhs.messageCount != rhs.messageCount { return lhs.messageCount > rhs.messageCount }
             // Tie-break: more recent activity first, then title for determinism.
