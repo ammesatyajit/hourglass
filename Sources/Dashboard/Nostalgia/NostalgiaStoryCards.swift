@@ -116,16 +116,11 @@ struct OnThisDayMomentCard: View {
                 .foregroundStyle(.tertiary)
 
                 if let quote = quoteText {
-                    HStack(alignment: .top, spacing: Space.xs) {
-                        QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
-                        if let guid = moment.messageGUID {
-                            OpenInMessagesButton(
-                                messageGUID: guid, body_: quote,
-                                senderName: moment.person ?? "", date: moment.date
-                            )
-                            .padding(.top, Space.sm)
-                        }
-                    }
+                    RevealableQuote(
+                        text: quote, isAttachment: isAttachment, tint: tint,
+                        messageGUID: moment.messageGUID,
+                        senderName: moment.person ?? "", date: moment.date
+                    )
                     .padding(.top, 2)
                 }
             }
@@ -429,16 +424,11 @@ private struct MomentTimelineRow: View {
                 }
 
                 if let quote = quoteText {
-                    HStack(alignment: .top, spacing: Space.xs) {
-                        QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
-                        if let guid = moment.messageGUID {
-                            OpenInMessagesButton(
-                                messageGUID: guid, body_: quote,
-                                senderName: moment.person ?? "", date: moment.date
-                            )
-                            .padding(.top, Space.sm)
-                        }
-                    }
+                    RevealableQuote(
+                        text: quote, isAttachment: isAttachment, tint: tint,
+                        messageGUID: moment.messageGUID,
+                        senderName: moment.person ?? "", date: moment.date
+                    )
                 }
             }
             .padding(.bottom, isLast ? 0 : Space.lg)
@@ -509,37 +499,70 @@ struct ActivitySparkline: View {
     }
 }
 
-// MARK: - Open-in-Messages button
+// MARK: - Revealable quote (the quote box IS the button)
 
-/// A quiet icon button that deep-links the quoted message in Messages.app —
-/// the ONLY reveal mechanism (Spotlight-grade GURL; the app never controls
-/// Messages). Rendered only when the moment carries a message GUID.
-struct OpenInMessagesButton: View {
-    let messageGUID: String
-    let body_: String
+/// A quoted message that deep-links itself in Messages.app on click — the
+/// whole box is the button. Hover makes the affordance obvious: the tint
+/// brightens, the border sharpens, a ↗ lights up, and the cursor switches
+/// to the pointing hand. Falls back to the plain (inert) QuoteBlock when
+/// the moment has no message GUID. Reveal is Spotlight-deep-link ONLY.
+struct RevealableQuote: View {
+    let text: String
+    let isAttachment: Bool
+    let tint: Color
+    let messageGUID: String?
     let senderName: String
     let date: Date
 
+    @State private var hovering = false
+
     var body: some View {
-        Button {
-            Task { @MainActor in
-                _ = await MessagesGUIDReveal.reveal(
-                    messageGUID: messageGUID,
-                    chatGUID: nil,
-                    body: body_,
-                    senderName: senderName,
-                    isFromMe: false,
-                    messageDate: date
+        if let guid = messageGUID, !isAttachment {
+            Button {
+                Task { @MainActor in
+                    _ = await MessagesGUIDReveal.reveal(
+                        messageGUID: guid,
+                        chatGUID: nil,
+                        body: text,
+                        senderName: senderName,
+                        isFromMe: false,
+                        messageDate: date
+                    )
+                }
+            } label: {
+                HStack(alignment: .top, spacing: Space.xs) {
+                    Text("“\(text)”")
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(hovering ? AnyShapeStyle(tint) : AnyShapeStyle(.tertiary))
+                }
+                .padding(Space.sm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+                    .fill(tint.opacity(hovering ? 0.16 : 0.06)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+                        .strokeBorder(tint.opacity(hovering ? 0.40 : 0.12), lineWidth: hovering ? 1 : 0.5)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
             }
-        } label: {
-            Image(systemName: "arrow.up.right.square")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .onHover { inside in
+                hovering = inside
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .help("Open in Messages")
+            .accessibilityLabel("Open this message in Messages")
+        } else {
+            QuoteBlock(text: text, isAttachment: isAttachment, tint: tint)
         }
-        .buttonStyle(.plain)
-        .help("Open in Messages")
-        .accessibilityLabel("Open in Messages")
     }
 }
 
