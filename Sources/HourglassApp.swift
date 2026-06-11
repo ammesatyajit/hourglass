@@ -36,14 +36,6 @@ struct HourglassApp: App {
         .defaultSize(width: 1200, height: 800)
         .windowResizability(.contentMinSize)
         .commands {
-            // ⌘F — Find anywhere in the app summons the search panel (the
-            // same one the global hotkey opens).
-            CommandGroup(after: .textEditing) {
-                Button("Find…") {
-                    appDelegate.showPanel()
-                }
-                .keyboardShortcut("f", modifiers: .command)
-            }
             // ⌘+/⌘−/⌘0 — browser-style dashboard zoom. "+" needs ⇧ on US
             // layouts, so "=" is registered too (matches Safari/Chrome).
             CommandGroup(after: .toolbar) {
