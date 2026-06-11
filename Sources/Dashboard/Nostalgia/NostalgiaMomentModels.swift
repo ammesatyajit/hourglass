@@ -84,6 +84,10 @@ public struct NotableMoment: Sendable, Equatable, Identifiable {
     /// conversation (those are about the chat, not a person). Used for the
     /// hide-set filter (a hidden person's moments drop out).
     public let person: String?
+    /// `message.guid` of the quoted message when the moment HAS one (origin /
+    /// peak-reaction). Powers the "open in Messages" button via the Spotlight
+    /// deep link. Nil for aggregate moments (biggest day, sessions, events).
+    public let messageGUID: String?
 
     /// Stable id within a story. Combines kind + date + a discriminator so two
     /// joins on the same instant don't collide.
@@ -96,6 +100,7 @@ public struct NotableMoment: Sendable, Equatable, Identifiable {
         detail: String? = nil,
         example: String? = nil,
         person: String? = nil,
+        messageGUID: String? = nil,
         idDiscriminator: String = ""
     ) {
         self.kind = kind
@@ -104,6 +109,7 @@ public struct NotableMoment: Sendable, Equatable, Identifiable {
         self.detail = detail
         self.example = example
         self.person = person
+        self.messageGUID = messageGUID
         let stamp = String(Int64(date.timeIntervalSinceReferenceDate.rounded()))
         self.id = "\(kind.rawValue)-\(stamp)-\(idDiscriminator)"
     }

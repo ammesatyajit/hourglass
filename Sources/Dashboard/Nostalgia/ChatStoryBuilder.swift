@@ -53,6 +53,9 @@ public enum ChatStoryBuilder {
         /// The single warmest reaction glyph on the message (for the peak
         /// headline, e.g. "❤️"). Nil when no reactions.
         public let topReactionEmoji: String?
+        /// `message.guid` — carries through to the moment so the UI can
+        /// deep-link the exact message in Messages.app. Nil in old fixtures.
+        public let guid: String?
 
         public init(
             rowID: Int64,
@@ -61,7 +64,8 @@ public enum ChatStoryBuilder {
             senderName: String,
             body: String,
             reactionCount: Int,
-            topReactionEmoji: String?
+            topReactionEmoji: String?,
+            guid: String? = nil
         ) {
             self.rowID = rowID
             self.date = date
@@ -70,6 +74,7 @@ public enum ChatStoryBuilder {
             self.body = body
             self.reactionCount = reactionCount
             self.topReactionEmoji = topReactionEmoji
+            self.guid = guid
         }
     }
 
@@ -236,7 +241,8 @@ public enum ChatStoryBuilder {
             headline: "It started here",
             detail: "\(who) · \(MomentFormat.day(first.date))",
             example: first.body,
-            person: first.isFromMe ? nil : first.senderName
+            person: first.isFromMe ? nil : first.senderName,
+            messageGUID: first.guid
         )
     }
 
@@ -363,6 +369,7 @@ public enum ChatStoryBuilder {
             detail: "\(who) · \(MomentFormat.day(top.date))",
             example: top.body,
             person: top.isFromMe ? nil : top.senderName,
+            messageGUID: top.guid,
             idDiscriminator: String(top.rowID)
         )
     }

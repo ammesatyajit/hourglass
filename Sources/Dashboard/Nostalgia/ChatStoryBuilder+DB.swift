@@ -241,7 +241,8 @@ extension ChatStoryBuilder {
                     senderName: senderName,
                     body: "",
                     reactionCount: rxCount,
-                    topReactionEmoji: rxCount > 0 ? glyph(forWarmRank: warmRank) : nil
+                    topReactionEmoji: rxCount > 0 ? glyph(forWarmRank: warmRank) : nil,
+                    guid: r["guid"]
                 ))
             }
 
@@ -378,7 +379,8 @@ extension ChatStoryBuilder {
                     senderName: m.senderName,
                     body: body,
                     reactionCount: m.reactionCount,
-                    topReactionEmoji: m.topReactionEmoji
+                    topReactionEmoji: m.topReactionEmoji,
+                    guid: m.guid
                 )
             }
             return RawChat(

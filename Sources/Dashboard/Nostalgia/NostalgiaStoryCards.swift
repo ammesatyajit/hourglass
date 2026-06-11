@@ -116,8 +116,17 @@ struct OnThisDayMomentCard: View {
                 .foregroundStyle(.tertiary)
 
                 if let quote = quoteText {
-                    QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
-                        .padding(.top, 2)
+                    HStack(alignment: .top, spacing: Space.xs) {
+                        QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
+                        if let guid = moment.messageGUID {
+                            OpenInMessagesButton(
+                                messageGUID: guid, body_: quote,
+                                senderName: moment.person ?? "", date: moment.date
+                            )
+                            .padding(.top, Space.sm)
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -420,7 +429,16 @@ private struct MomentTimelineRow: View {
                 }
 
                 if let quote = quoteText {
-                    QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
+                    HStack(alignment: .top, spacing: Space.xs) {
+                        QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
+                        if let guid = moment.messageGUID {
+                            OpenInMessagesButton(
+                                messageGUID: guid, body_: quote,
+                                senderName: moment.person ?? "", date: moment.date
+                            )
+                            .padding(.top, Space.sm)
+                        }
+                    }
                 }
             }
             .padding(.bottom, isLast ? 0 : Space.lg)
@@ -488,6 +506,40 @@ struct ActivitySparkline: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Open-in-Messages button
+
+/// A quiet icon button that deep-links the quoted message in Messages.app —
+/// the ONLY reveal mechanism (Spotlight-grade GURL; the app never controls
+/// Messages). Rendered only when the moment carries a message GUID.
+struct OpenInMessagesButton: View {
+    let messageGUID: String
+    let body_: String
+    let senderName: String
+    let date: Date
+
+    var body: some View {
+        Button {
+            Task { @MainActor in
+                _ = await MessagesGUIDReveal.reveal(
+                    messageGUID: messageGUID,
+                    chatGUID: nil,
+                    body: body_,
+                    senderName: senderName,
+                    isFromMe: false,
+                    messageDate: date
+                )
+            }
+        } label: {
+            Image(systemName: "arrow.up.right.square")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Open in Messages")
+        .accessibilityLabel("Open in Messages")
     }
 }
 
