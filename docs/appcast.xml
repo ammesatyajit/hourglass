@@ -9,6 +9,35 @@
         <description>Hourglass updates feed.</description>
         <language>en</language>
         <item>
+            <title>Version 0.3.1</title>
+            <pubDate>Thu, 11 Jun 2026 04:43:56 +0000</pubDate>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Dashboard</h3>
+                <ul>
+                    <li><strong>Chat history at a glance</strong> — every conversation row carries its message-frequency curve, all sharing one timeline of your texting life.</li>
+                    <li><strong>⌘+ / ⌘− / ⌘0</strong> — zoom the dashboard like a browser.</li>
+                    <li><strong>Open any memory in Messages</strong> — quoted messages in the chat timelines are clickable and jump straight to that message in Messages.app.</li>
+                </ul>
+                <h3>Vernacular</h3>
+                <ul>
+                    <li>Clearer names: Sentence frames, Words, and Expressions; tabs are now Circles and Vocabulary with an honest loading state.</li>
+                    <li>Everyone in the word-spread graph is labeled, and per-person profiles say when they're still loading.</li>
+                </ul>
+                <h3>Other</h3>
+                <ul>
+                    <li>Removed the hide-suggestions prompt — one tap in Manage hides anyone permanently.</li>
+                    <li>Reveal-in-Messages is deep-link only — all keyboard/Accessibility automation of Messages was removed.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.3.1/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="vHjArfswH6YorNqSewbGw7e2hWLOpvHt48/wkfLwl9T6Kp+qjjT7jig2Pz2zusbaaZUk6vCN0KZZzysBdiS2Cw==" length="16366611" />
+        </item>
+        <item>
             <title>Version 0.3.0</title>
             <pubDate>Wed, 10 Jun 2026 05:07:19 +0000</pubDate>
             <sparkle:version>5</sparkle:version>

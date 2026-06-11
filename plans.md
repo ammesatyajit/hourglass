@@ -4615,3 +4615,9 @@ DONE (all building):
 8. ◐ handleHitWidth 16→24 (non-LG grab-zone complaint). FULL convergence + LG lag needs interactive profiling.
 7. ◯ Search typing lag: SpotlightResultsList.equatable() already in place; suggestions only compute under operator prefixes; debounce 150ms exists. Remaining suspect = liquid-glass material redraw per keystroke (same root as 8). Needs the operator's machine/eyes.
 NOT shipped yet — operator visual verification next, then 7/8 finish, then 0.3.1 release.
+
+---
+## SHIPPED — v0.3.1 (2026-06-10 ~21:50 PT)
+https://github.com/ammesatyajit/hourglass/releases/tag/v0.3.1 (signed+notarized DMG, Sparkle item live). Build 6.
+In: chat-row activity sparklines (curved, header-pinned, global x-axis), ⌘+/⌘−/⌘0 dashboard zoom (ZoomContainer, persisted), clickable quote boxes → deep-link reveal (GUID threaded RawMessage→NotableMoment; hover affordance), exes-prompt removal, public renames (Sentence frames/Words/Expressions; Circles+Vocabulary), loading affordances, gray-node labels, keystroke/AX Messages-automation DELETED (deep-link only), handle hit 16→24.
+OPEN for 0.3.2: item 7 search typing lag (LG suspect), item 8 LG/non-LG timeline convergence, phrases→topics miner, frames for contacts (Mason "___ NOT ___"), contact gates registry items (gang shipped in 0.3.1 data layer ✓), substrate parity.
