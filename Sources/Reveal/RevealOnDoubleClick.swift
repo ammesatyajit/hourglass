@@ -45,29 +45,24 @@ public struct MessageRevealTarget {
 
 public extension View {
     /// Double-click anywhere on this view → open Messages.app scrolled to the
-    /// message. nil target = no gesture attached.
+    /// message via the Spotlight-grade deep link. STRICTLY deep-link only:
+    /// a target without a message GUID gets NO gesture (the app must never
+    /// take control of Messages — no synthesized keystrokes, no AX driving).
     @ViewBuilder
     func revealsInMessages(_ target: MessageRevealTarget?) -> some View {
-        if let target {
+        if let target, let guid = target.messageGUID {
             self
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     Task { @MainActor in
-                        if let guid = target.messageGUID, let chat = target.chatGUID {
-                            _ = await MessagesGUIDReveal.reveal(
-                                messageGUID: guid,
-                                chatGUID: chat,
-                                body: target.body,
-                                senderName: target.senderName,
-                                isFromMe: target.isFromMe,
-                                messageDate: target.date
-                            )
-                        } else {
-                            // No GUID on this model — degrade to fronting
-                            // Messages and driving its Find at the body text.
-                            _ = MessagesReveal.openMessagesApp()
-                            _ = MessagesReveal.scrollToMessage(body: target.body)
-                        }
+                        _ = await MessagesGUIDReveal.reveal(
+                            messageGUID: guid,
+                            chatGUID: target.chatGUID,
+                            body: target.body,
+                            senderName: target.senderName,
+                            isFromMe: target.isFromMe,
+                            messageDate: target.date
+                        )
                     }
                 }
                 .help("Double-click to open in Messages")

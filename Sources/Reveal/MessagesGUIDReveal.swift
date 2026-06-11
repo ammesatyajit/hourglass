@@ -92,29 +92,15 @@ public enum MessagesGUIDReveal {
             return .scrolledToMessage(viaHighlight: true)
         }
 
-        // Fallback (legacy AX-scroll + keystroke): only fires when the
-        // Spotlight URL path fails (e.g. AppleScript rejected, Messages.app
-        // not running). Kept for safety; expected to rarely trigger.
+        // Fallback: open the right chat — NOTHING more. (0.3.1: the old
+        // AX-scroll + synthesized-keystroke fallback was removed wholesale;
+        // the app must never take control of Messages. Deep links only.)
         guard let chatID = chatIdentifier(fromChatGUID: chatGUID),
               let openURL = chatOpenURL(forChatIdentifier: chatID),
               NSWorkspace.shared.open(openURL) else {
             return .chatOpenFailed
         }
-        try? await Task.sleep(for: .milliseconds(450))
-        let needles = expectedDescriptionNeedles(
-            body: body, senderName: senderName,
-            isFromMe: isFromMe, messageDate: messageDate
-        )
-        let scrolledViaAX = scrollToMessage(matchingDescriptionNeedles: needles)
-        let hadHighlight = !body.isEmpty && MessagesReveal.scrollToMessage(
-            body: body, chatJustOpened: false
-        )
-        switch (scrolledViaAX, hadHighlight) {
-        case (true, true):   return .scrolledToMessage(viaHighlight: true)
-        case (true, false):  return .scrolledToMessage(viaHighlight: false)
-        case (false, true):  return .chatOpenedFindOnly
-        case (false, false): return .chatOpenedOnly
-        }
+        return .chatOpenedOnly
     }
 
     // MARK: - Spotlight-equivalent deep link
@@ -246,144 +232,7 @@ public enum MessagesGUIDReveal {
         return f.string(from: date)
     }
 
-    // MARK: - AX walk (side-effecting)
+    // (0.3.1: the AX-walk scroll machinery was deleted — the app never
+    // drives Messages via Accessibility. Reveal is deep-link only.)
 
-    /// Walk Messages.app's AX tree and call `AXScrollToVisible` on the first
-    /// message bubble whose `AXDescription` contains **all** of the supplied
-    /// needles (case-insensitive). Returns `true` if we found and scrolled
-    /// to a match.
-    ///
-    /// Why all-needles-AND: AX inserts unpredictable text between our known
-    /// anchors (attachment phrases, reactions, "Your iMessage" prefix). A
-    /// single concatenated substring would miss those rows; an AND of
-    /// shorter anchors hits them naturally.
-    ///
-    /// Requires Accessibility permission. If not granted, returns `false`
-    /// silently — the chat is still open at most-recent position.
-    static func scrollToMessage(matchingDescriptionNeedles needles: [String]) -> Bool {
-        // Drop empty needles; if nothing useful is left, bail.
-        let active = needles.map { $0.lowercased() }.filter { !$0.isEmpty }
-        guard !active.isEmpty else { return false }
-        guard MessagesReveal.ensureAccessibilityTrust() else { return false }
-        guard let messagesPID = messagesProcessID() else { return false }
-
-        let app = AXUIElementCreateApplication(messagesPID)
-        // Find the focused window (most recently activated by our `open` call).
-        guard let window = axChild(app, attr: kAXFocusedWindowAttribute as CFString)
-                      ?? axChild(app, attr: kAXMainWindowAttribute as CFString) else {
-            return false
-        }
-
-        // Find the transcript collection view.
-        guard let transcript = findFirst(window, identifier: "TranscriptCollectionView")
-        else { return false }
-
-        // Enumerate Sticker descendants; match by ALL-needles-AND description.
-        let bubbles = findAll(transcript, identifier: "Sticker")
-        for bubble in bubbles {
-            let desc = (axString(bubble, attr: kAXDescriptionAttribute as CFString) ?? "")
-                .lowercased()
-            let allPresent = active.allSatisfy { desc.contains($0) }
-            if allPresent {
-                // `AXScrollToVisible` is a documented Carbon constant but
-                // Swift 6 strict concurrency refuses to bridge the C global
-                // — use the documented string value directly. Empirically
-                // verified action on Messages.app message bubbles (macOS 26.5).
-                _ = AXUIElementPerformAction(bubble, "AXScrollToVisible" as CFString)
-
-                // After `sms://open?…` the OS gives Messages.app focus but
-                // the *first responder* lands on the sidebar's universal
-                // search field by default — so a subsequent ⌘F lands there
-                // instead of inside the chat. Explicitly move keyboard focus
-                // into the transcript before any keystroke synthesis runs.
-                //
-                // We focus the transcript container, not the bubble itself —
-                // bubbles aren't first-responder-eligible, but the transcript
-                // collection view is, and focusing it puts ⌘F in the right
-                // "Find in Conversation" context.
-                _ = AXUIElementSetAttributeValue(
-                    transcript,
-                    "AXFocused" as CFString,
-                    kCFBooleanTrue
-                )
-                return true
-            }
-        }
-        return false
-    }
-
-    // MARK: - AX helpers
-
-    private static func messagesProcessID() -> pid_t? {
-        let running = NSWorkspace.shared.runningApplications
-        return running.first { $0.bundleIdentifier == "com.apple.MobileSMS" }?.processIdentifier
-    }
-
-    private static func axChild(_ elem: AXUIElement, attr: CFString) -> AXUIElement? {
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(elem, attr, &value)
-        if err == .success, CFGetTypeID(value) == AXUIElementGetTypeID() {
-            return (value as! AXUIElement)
-        }
-        return nil
-    }
-
-    private static func axString(_ elem: AXUIElement, attr: CFString) -> String? {
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(elem, attr, &value)
-        if err == .success, let s = value as? String { return s }
-        return nil
-    }
-
-    private static func axChildren(_ elem: AXUIElement) -> [AXUIElement] {
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(
-            elem, kAXChildrenAttribute as CFString, &value
-        )
-        guard err == .success, let arr = value as? [AXUIElement] else { return [] }
-        return arr
-    }
-
-    /// Depth-first search for the first descendant whose `AXIdentifier`
-    /// equals `identifier`. Bounded to avoid runaway walks if Messages.app
-    /// ever introduces a cycle (it shouldn't).
-    private static func findFirst(
-        _ root: AXUIElement,
-        identifier: String,
-        maxDepth: Int = 30
-    ) -> AXUIElement? {
-        var stack: [(AXUIElement, Int)] = [(root, 0)]
-        while let (elem, depth) = stack.popLast() {
-            if depth > maxDepth { continue }
-            if let id = axString(elem, attr: kAXIdentifierAttribute as CFString),
-               id == identifier {
-                return elem
-            }
-            for child in axChildren(elem) {
-                stack.append((child, depth + 1))
-            }
-        }
-        return nil
-    }
-
-    /// Collect every descendant whose `AXIdentifier` equals `identifier`.
-    private static func findAll(
-        _ root: AXUIElement,
-        identifier: String,
-        maxDepth: Int = 30
-    ) -> [AXUIElement] {
-        var out: [AXUIElement] = []
-        var stack: [(AXUIElement, Int)] = [(root, 0)]
-        while let (elem, depth) = stack.popLast() {
-            if depth > maxDepth { continue }
-            if let id = axString(elem, attr: kAXIdentifierAttribute as CFString),
-               id == identifier {
-                out.append(elem)
-            }
-            for child in axChildren(elem) {
-                stack.append((child, depth + 1))
-            }
-        }
-        return out
-    }
 }

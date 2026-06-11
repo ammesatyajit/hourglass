@@ -171,99 +171,15 @@ public enum MessagesReveal {
         }
 
         // Legacy fallback: no chat GUID available (e.g. test fixture without
-        // it, or extremely old DB rows). Reproduce the previous behavior.
+        // it, or extremely old DB rows). Open the right chat; nothing more.
+        // (0.3.1: ALL keystroke/AX synthesis removed — the app must NEVER
+        // take control of Messages. Reveal is deep-link only.)
         let db = database ?? sharedDatabase
         let participants = participants(for: result, database: db)
-        let opened: Bool
         if let url = revealURL(for: result, participants: participants) {
-            opened = NSWorkspace.shared.open(url)
-        } else {
-            opened = openMessagesApp()
+            return NSWorkspace.shared.open(url)
         }
-        _ = scrollToMessage(body: result.message.body)
-        return opened
-    }
-
-    // MARK: - Scroll-and-highlight via synthesized keystrokes
-
-    /// After the chat is open, drive Messages.app's built-in Find feature to
-    /// scroll-and-highlight the specific message. Synthesizes ⌘F → ⌘V → ↵.
-    ///
-    /// Returns `true` if we *began* the keystroke sequence (i.e. body is
-    /// non-empty and Accessibility permission is granted). Returns `false`
-    /// otherwise — the chat is still open, the user just has to scroll
-    /// manually. Honest degradation.
-    ///
-    /// `chatJustOpened` controls the pre-keystroke warmup. When `true` (the
-    /// legacy fallback path that just called `NSWorkspace.shared.open`), we
-    /// wait 450 ms for Messages.app to come to front and switch to the chat
-    /// before pressing ⌘F. When `false` (the GUID path, which has already
-    /// awaited the chat open and AX-scrolled into the right region), we
-    /// keystroke almost immediately — the chat is ready and there's no
-    /// point making the user wait.
-    ///
-    /// Note: returning `true` doesn't guarantee Messages.app's Find actually
-    /// found anything; we have no observation channel for that. We can only
-    /// say "we sent the keystrokes." Callers needing a confirmation signal
-    /// should use the AX-based `MessagesGUIDReveal` path instead.
-    ///
-    /// Pasteboard is touched here, not before opening the chat, because some
-    /// macOS builds clear the paste buffer when an app changes focus.
-    @discardableResult
-    @MainActor
-    public static func scrollToMessage(body: String, chatJustOpened: Bool = true) -> Bool {
-        guard !body.isEmpty else { return false }
-        guard ensureAccessibilityTrust() else { return false }
-
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(body, forType: .string)
-
-        let warmup = chatJustOpened ? 450 : 100
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(warmup))
-            postCommandKey(virtualKey: 0x03)            // ⌘F (Find)
-            try? await Task.sleep(for: .milliseconds(150))
-            postCommandKey(virtualKey: 0x09)            // ⌘V (Paste)
-            try? await Task.sleep(for: .milliseconds(150))
-            postKey(virtualKey: 0x24)                   // ↵ (Return)
-        }
-        return true
-    }
-
-    /// Check (and on the first call, prompt for) Accessibility permission.
-    /// Returns `true` if our process is trusted to use AX APIs like
-    /// `CGEvent.post` and `AXUIElementPerformAction`.
-    ///
-    /// Internal so `MessagesGUIDReveal` can share the gate.
-    ///
-    /// We use the documented string literal `"AXTrustedCheckOptionPrompt"`
-    /// directly instead of `kAXTrustedCheckOptionPrompt` — the latter is a C
-    /// global that Swift 6 strict concurrency refuses to capture.
-    @MainActor
-    static func ensureAccessibilityTrust() -> Bool {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
-    }
-
-    /// Post a `command + <key>` keystroke pair (key-down + key-up).
-    private static func postCommandKey(virtualKey: CGKeyCode) {
-        let src = CGEventSource(stateID: .hidSystemState)
-        let down = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: true)
-        down?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: false)
-        up?.flags = .maskCommand
-        up?.post(tap: .cghidEventTap)
-    }
-
-    /// Post a plain (no modifiers) keystroke pair.
-    private static func postKey(virtualKey: CGKeyCode) {
-        let src = CGEventSource(stateID: .hidSystemState)
-        let down = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: true)
-        down?.post(tap: .cghidEventTap)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: false)
-        up?.post(tap: .cghidEventTap)
+        return openMessagesApp()
     }
 
     /// Bring `Messages.app` to the foreground without selecting any chat.

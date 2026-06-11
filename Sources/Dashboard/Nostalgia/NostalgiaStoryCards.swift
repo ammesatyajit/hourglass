@@ -118,11 +118,6 @@ struct OnThisDayMomentCard: View {
                 if let quote = quoteText {
                     QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
                         .padding(.top, 2)
-                        .revealsInMessages(isAttachment ? nil : MessageRevealTarget(
-                            messageGUID: nil, chatGUID: nil, body: quote,
-                            senderName: moment.person ?? "", isFromMe: false,
-                            date: moment.date
-                        ))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -199,13 +194,6 @@ struct ChatStoryRow: View {
             RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
                 .fill(Color.contentBackground)
         )
-        .background(
-            // The chat's whole history as a quiet area chart behind the row.
-            // Every row shares ONE x-axis (the global corpus span), so where
-            // a chat sits in your life reads at a glance.
-            ActivitySparkline(samples: story.activity)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.large, style: .continuous))
-        )
         .overlay(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
             .strokeBorder(Color.hairline, lineWidth: 1))
         .animation(reduceMotion ? nil : .bmDefault, value: expanded)
@@ -253,6 +241,22 @@ struct ChatStoryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(
+            // The chat's whole history as a quiet area chart behind the
+            // HEADER (not the whole card, so expanding the timeline doesn't
+            // stretch it). Every row shares ONE x-axis — the global corpus
+            // span — so where a chat sits in your life reads at a glance.
+            // Bottom corners only round while collapsed; expanded, the chart
+            // ends flush where the divider sits.
+            ActivitySparkline(samples: story.activity)
+                .clipShape(UnevenRoundedRectangle(
+                    topLeadingRadius: Radius.large,
+                    bottomLeadingRadius: expanded ? 0 : Radius.large,
+                    bottomTrailingRadius: expanded ? 0 : Radius.large,
+                    topTrailingRadius: Radius.large,
+                    style: .continuous
+                ))
+        )
         .accessibilityLabel("\(story.title), \(story.messageCount) messages")
         .accessibilityHint(expanded ? "Collapse story" : "Expand story")
     }
@@ -417,11 +421,6 @@ private struct MomentTimelineRow: View {
 
                 if let quote = quoteText {
                     QuoteBlock(text: quote, isAttachment: isAttachment, tint: tint)
-                        .revealsInMessages(isAttachment ? nil : MessageRevealTarget(
-                            messageGUID: nil, chatGUID: nil, body: quote,
-                            senderName: moment.person ?? "", isFromMe: false,
-                            date: moment.date
-                        ))
                 }
             }
             .padding(.bottom, isLast ? 0 : Space.lg)
@@ -460,16 +459,32 @@ struct ActivitySparkline: View {
             guard samples.count > 1, let rawMax = samples.max(), rawMax > 0 else { return }
             let maxV = rawMax.squareRoot()
             let stepX = size.width / CGFloat(samples.count - 1)
-            var path = Path()
-            path.move(to: CGPoint(x: 0, y: size.height))
-            for (i, v) in samples.enumerated() {
+            let points: [CGPoint] = samples.enumerated().map { i, v in
                 let h = CGFloat(v.squareRoot() / maxV) * size.height * 0.9
-                path.addLine(to: CGPoint(x: CGFloat(i) * stepX, y: size.height - h))
+                return CGPoint(x: CGFloat(i) * stepX, y: size.height - h)
             }
-            path.addLine(to: CGPoint(x: size.width, y: size.height))
-            path.closeSubpath()
-            ctx.fill(path, with: .color(Color.accentColor.opacity(0.07)))
-            ctx.stroke(path, with: .color(Color.accentColor.opacity(0.12)), lineWidth: 1)
+
+            // Smooth top edge: quadratic curves through segment midpoints,
+            // with the data points as controls — no jagged bucket corners.
+            var line = Path()
+            line.move(to: points[0])
+            for i in 1..<points.count {
+                let mid = CGPoint(
+                    x: (points[i - 1].x + points[i].x) / 2,
+                    y: (points[i - 1].y + points[i].y) / 2
+                )
+                line.addQuadCurve(to: mid, control: points[i - 1])
+            }
+            line.addLine(to: points[points.count - 1])
+
+            var area = line
+            area.addLine(to: CGPoint(x: size.width, y: size.height))
+            area.addLine(to: CGPoint(x: 0, y: size.height))
+            area.closeSubpath()
+
+            ctx.fill(area, with: .color(Color.accentColor.opacity(0.12)))
+            ctx.stroke(line, with: .color(Color.accentColor.opacity(0.22)),
+                       style: StrokeStyle(lineWidth: 1, lineJoin: .round))
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
