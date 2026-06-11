@@ -21,18 +21,43 @@ struct HourglassApp: App {
             // can still be nil even though @NSApplicationDelegateAdaptor
             // has run — that race is exactly what was breaking the NL
             // bar's reactive swap (see plans.md 2026-05-24 features-agent).
-            DashboardView(searchViewModel: appDelegate.viewModel,
-                          appDelegate: appDelegate)
-                .frame(minWidth: 900, minHeight: 620)
-                .containerBackground(.thinMaterial, for: .window)
-                // Publish `openWindow` to AppKit so AppDelegate can open the
-                // Dashboard on Dock-click (see `WindowOpener`).
-                .background(WindowOpenerBridge())
+            ZoomContainer {
+                DashboardView(searchViewModel: appDelegate.viewModel,
+                              appDelegate: appDelegate)
+            }
+            .frame(minWidth: 900, minHeight: 620)
+            .containerBackground(.thinMaterial, for: .window)
+            // Publish `openWindow` to AppKit so AppDelegate can open the
+            // Dashboard on Dock-click (see `WindowOpener`).
+            .background(WindowOpenerBridge())
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified(showsTitle: false))
         .defaultSize(width: 1200, height: 800)
         .windowResizability(.contentMinSize)
+        .commands {
+            // ⌘F — Find anywhere in the app summons the search panel (the
+            // same one the global hotkey opens).
+            CommandGroup(after: .textEditing) {
+                Button("Find…") {
+                    appDelegate.showPanel()
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
+            // ⌘+/⌘−/⌘0 — browser-style dashboard zoom. "+" needs ⇧ on US
+            // layouts, so "=" is registered too (matches Safari/Chrome).
+            CommandGroup(after: .toolbar) {
+                Button("Zoom In") { DashboardZoom.shared.zoomIn() }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Zoom In (=)") { DashboardZoom.shared.zoomIn() }
+                    .keyboardShortcut("=", modifiers: .command)
+                    .hidden()
+                Button("Zoom Out") { DashboardZoom.shared.zoomOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                Button("Actual Size") { DashboardZoom.shared.reset() }
+                    .keyboardShortcut("0", modifiers: .command)
+            }
+        }
 
         // Menu bar entry — secondary, ever-present surface for quick access
         // to the panel, the browser, and Settings.
