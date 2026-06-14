@@ -750,6 +750,42 @@ public extension NLAgent {
                 )
             }
 
+        case "plansInWindow", "plans", "commitments":
+            // The "what did I commit to / plan in this window" tool. One
+            // observation: YOUR cue-filtered sent messages across ALL chats,
+            // chronological — so the model summarizes every distinct plan in a
+            // single read instead of diving into one chat and stopping (the
+            // grounded-eval failure mode, docs/nl-eval-grounded.md).
+            let limit = call.args["limit"]?.asInt ?? 60
+            do {
+                let results = try await tools.plansInWindow(in: dateRange, limit: limit)
+                lastCandidates = results
+                let displayCount = min(results.count, Self.readPreviewCount)
+                let preview = results.prefix(displayCount).enumerated().map { (i, r) in
+                    NLAgent.formatResultLine(index: i, result: r)
+                }.joined(separator: "\n")
+                let windowLabel = dateRange.map {
+                    "\(NLAgent.formatISODate($0.lowerBound))..\(NLAgent.formatISODate($0.upperBound))"
+                } ?? "all_time"
+                let obs: String
+                if results.isEmpty {
+                    obs = "Found 0 plan-like messages you sent in \(windowLabel). Try a wider window, or use `search`/`readMessages` if the user named a specific person or topic."
+                } else {
+                    obs = "Your \(results.count) plan/commitment message\(results.count == 1 ? "" : "s") across all chats in \(windowLabel) (chronological, each tagged with the chat). Summarize the DISTINCT plans — dedupe, drop non-commitments:\n\(preview)"
+                }
+                return ToolObservation(
+                    observation: obs,
+                    summary: "\(results.count) plans",
+                    failed: false
+                )
+            } catch {
+                return ToolObservation(
+                    observation: "plansInWindow failed: \(error)",
+                    summary: "failed",
+                    failed: true
+                )
+            }
+
         case "countMatching", "count":
             let query = call.args["query"]?.asString ?? ""
             do {
@@ -935,7 +971,7 @@ public extension NLAgent {
 
         default:
             return ToolObservation(
-                observation: "Unknown tool '\(call.tool)'. Available: search, readMessages, countMatching, firstMatching, topContacts, topGroups, overviewStats, messagesAroundTime, context, rawSearchSQL. Emit a final answer with {\"answer\": \"...\"} when done.",
+                observation: "Unknown tool '\(call.tool)'. Available: plansInWindow, search, readMessages, countMatching, firstMatching, topContacts, topGroups, overviewStats, messagesAroundTime, context, rawSearchSQL. Emit a final answer with {\"answer\": \"...\"} when done.",
                 summary: "unknown",
                 failed: true
             )
@@ -973,6 +1009,9 @@ public extension NLAgent {
         You have up to 8 tool calls — spend them adapting breadth, not guessing.
 
         Available tools (priority order):
+
+        0) {"tool":"plansInWindow","args":{"in":"<date-range>","limit":<int>}}
+           Your cue-filtered SENT messages across ALL chats in a window — the things you said you'd do (let's/I'll/gonna/confirmed/tmrw/meeting/times…), chronological, each tagged with its chat. Use this FIRST and usually ONLY for "what plans/commitments did I make this <week/window>", "what did I agree to", "what's coming up". One observation holds every plan across every chat — read it and summarize the DISTINCT plans (dedupe, drop non-commitments, name who each is with). Do NOT then dive into one chat — you already have the full picture.
 
         1) {"tool":"readMessages","args":{"with":"<name or null>","in":"<date-range>","limit":<int>}}
            Read a CHRONOLOGICAL dump of messages in the 1:1 chat with a person in a window. Returns full message bodies. Use this FIRST for investigative queries — "what was my argument with X N weeks ago" — when you need to actually SCAN the conversation to identify where the argument starts. The `with` arg scopes to the 1:1 conversation with that person (NOT group chats they happen to be in). If readMessages comes back empty, fall through to `search` with `with:"NAME"` for the broader "any chat with NAME" scope. CRITICAL: pick a TIGHT date range (≤7 days) centered on the target time, and use limit 60-80. A wide window like last_30d returns the OLDEST 25 messages from the start of the month and buries the target in chatter — the model never sees it.
@@ -1093,7 +1132,8 @@ public extension NLAgent {
     internal static func isReadTool(_ tool: String) -> Bool {
         switch tool {
         case "search", "readMessages", "messagesAroundTime", "context",
-             "firstMatching", "oldestMatching", "rawSearchSQL":
+             "firstMatching", "oldestMatching", "rawSearchSQL",
+             "plansInWindow", "plans", "commitments":
             return true
         default:
             return false

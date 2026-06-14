@@ -181,6 +181,21 @@ public protocol NLAgentTools: Sendable {
         limit: Int
     ) async throws -> [[String: String]]
 
+    /// Surface the things YOU committed to / planned in a date window, across
+    /// EVERY chat at once. Returns your SENT messages in the window whose text
+    /// carries commitment/plan language (let's, I'll, gonna, we should,
+    /// confirmed, tmrw/tomorrow, plan, meeting, next week, a time, …),
+    /// chronological, each tagged with the chat it's in. ONE observation the
+    /// model can read and summarize into distinct plans — the answer to "what
+    /// did I commit to / plan this week" that `search`+`readMessages` can't
+    /// give (they're per-keyword or per-person; commitments span all chats).
+    ///
+    /// `dateRange == nil` is unbounded (caller should normally scope to a week).
+    func plansInWindow(
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [MessageSearch.Result]
+
     // MARK: - Person → 1:1 chat resolution (deterministic scoped path)
 
     /// Resolve a person phrase ("Annika", "annika renganathan") to their
@@ -260,6 +275,7 @@ public extension NLAgentTools {
         return results.reversed()
     }
     func rawSearchSQL(sql: String, limit: Int) async throws -> [[String: String]] { [] }
+    func plansInWindow(in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [MessageSearch.Result] { [] }
 
     /// Default: no resolution. The production `MessageSearchTools` overrides
     /// this with the real AddressBook + chat.db lookup. Mocks that exercise
@@ -1052,6 +1068,119 @@ public struct MessageSearchTools: NLAgentTools {
         // Final chronological order (oldest → newest) regardless of the SQL
         // direction we used to pick which N rows to keep.
         return results.sorted { $0.message.date < $1.message.date }
+    }
+
+    /// Production `plansInWindow`. A single deterministic SQL pass: YOUR sent
+    /// messages (`is_from_me = 1`) in the window whose body matches any
+    /// commitment/plan cue, across every chat, chronological. The cue filter
+    /// is what makes this tractable — it narrows "everything you said this
+    /// week" (hundreds of rows) to the ~tens that are actually plans, so they
+    /// fit in one model observation and the model can summarize without
+    /// multiple reads. Body lives in `text` OR `attributedBody` (decoded).
+    public func plansInWindow(
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [MessageSearch.Result] {
+        let safeLimit = max(1, min(limit, 120))
+
+        // Commitment / plan cues — substring matches on the decoded body. Cast
+        // wide on purpose; the model dedupes + discards non-plans when it reads.
+        let cues = [
+            "let's", "let’s", "lets ", "i'll", "i’ll", "ill ", "gonna", "we should",
+            "i should", "confirmed", "next week", "this weekend", "tmrw", "tomorrow",
+            "i'm gonna", "i’m gonna", "we're gonna", "we’re gonna", "we can ", "i can ",
+            "plan", "meeting", "we're confirmed", "we’re confirmed", "i want to", "i wanna",
+            "gotta", "i need to", "we'll", "we’ll", "i will", "down to", "let me know",
+            "am ", "pm ", "8am", "9am", "tonight", "this week", "see you", "see u",
+        ]
+        // chat.db has no `text` for most modern rows (attributedBody only), so
+        // we can't filter cues in SQL reliably — fetch sent rows in the window
+        // (bounded), decode bodies, then cue-filter in Swift. The window + the
+        // is_from_me gate keep the fetched set small.
+        let columnList = """
+            m.ROWID                   AS rowid,
+            m.guid                    AS guid,
+            m.date                    AS date,
+            m.is_from_me              AS is_from_me,
+            m.text                    AS text,
+            m.attributedBody          AS attributedBody,
+            m.associated_message_type AS associated_message_type,
+            h.id                      AS sender_handle,
+            cmj.chat_id               AS chat_id,
+            ch.style                  AS chat_style,
+            ch.display_name           AS chat_display_name,
+            ch.guid                   AS chat_guid
+            """
+        var dateClause = ""
+        var dateArgs: [DatabaseValueConvertible] = []
+        if let range = dateRange {
+            let loNS = MessageDate.nanosecondsSinceMacEpoch(from: range.lowerBound)
+            let hiNS = MessageDate.nanosecondsSinceMacEpoch(from: range.upperBound)
+            let loS = MessageDate.secondsSinceMacEpoch(from: range.lowerBound)
+            let hiS = MessageDate.secondsSinceMacEpoch(from: range.upperBound)
+            dateClause = """
+                AND (
+                    (m.date > 1000000000000 AND m.date BETWEEN ? AND ?)
+                 OR (m.date <= 1000000000000 AND m.date BETWEEN ? AND ?)
+                )
+                """
+            dateArgs = [loNS, hiNS, loS, hiS]
+        }
+        // Fetch the NEWEST 600 sent rows in the window (a week of one person's
+        // sends is well under this), then cue-filter + chronological-sort in
+        // Swift. The 600 cap bounds memory if the window is huge.
+        let sql = """
+            SELECT \(columnList)
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat ch ON ch.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON h.ROWID = m.handle_id
+            WHERE m.is_from_me = 1
+              AND m.associated_message_type = 0
+              \(dateClause)
+            ORDER BY m.date DESC
+            LIMIT 600
+            """
+        let chatDB = self.chatDB
+        let contacts = instr.contacts
+        let cueSet = cues
+        let results: [MessageSearch.Result] = try await Task.detached(priority: .userInitiated) {
+            try chatDB.dbQueue.read { db in
+                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(dateArgs))
+                var out: [MessageSearch.Result] = []
+                for row in rows {
+                    let text: String? = row["text"]
+                    let blob: Data? = row["attributedBody"]
+                    let body = (text?.isEmpty == false) ? text! : AttributedBodyDecoder.decode(blob)
+                    let low = body.lowercased()
+                    guard body.count >= 8, cueSet.contains(where: { low.contains($0) }) else { continue }
+                    let rawDate: Int64 = row["date"]
+                    let chatDisplayName: String? = row["chat_display_name"]
+                    let chatStyle: Int? = row["chat_style"]
+                    let m = Message(
+                        id: row["rowid"], guid: row["guid"],
+                        date: MessageDate.date(fromRaw: rawDate),
+                        isFromMe: true, chatRowID: row["chat_id"],
+                        senderHandle: row["sender_handle"], chatStyle: chatStyle,
+                        chatDisplayName: chatDisplayName, body: body,
+                        associatedMessageType: row["associated_message_type"] as Int? ?? 0
+                    )
+                    let partner: String
+                    if let dn = chatDisplayName, !dn.isEmpty { partner = dn }
+                    else if let raw: String = row["sender_handle"] { partner = contacts.name(forRawHandle: raw) }
+                    else { partner = "(unknown)" }
+                    out.append(MessageSearch.Result(
+                        message: m, partnerName: partner, senderName: "You",
+                        chatGUID: row["chat_guid"]
+                    ))
+                    if out.count >= safeLimit * 3 { break }   // headroom before the chronological trim
+                }
+                return out
+            }
+        }.value
+
+        // Chronological (oldest → newest) so the week reads as a story, capped.
+        return Array(results.sorted { $0.message.date < $1.message.date }.suffix(safeLimit))
     }
 
     /// Read-only SQL escape hatch. The LLM is instructed to NEVER call

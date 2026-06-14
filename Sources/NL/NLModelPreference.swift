@@ -54,11 +54,16 @@ public enum NLModelFamily: Sendable, Equatable {
 /// reliable synthesis + general ReAct (Codex #3). `high` is the opt-in 7B
 /// for users who want the best answers and have the disk + RAM headroom.
 public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifiable {
-    /// Default. `mlx-community/Qwen3-1.7B-4bit` (~1.0 GB) — the EXISTING cached
-    /// model that loads in ~1–2s so the gated LLM judge is `.ready` fast and
-    /// actually runs (reverted from 4B per user: "use existing qwen for now").
+    /// Default. `mlx-community/Qwen3-4B-4bit` (~2.5 GB). Chosen by the grounded
+    /// NL-eval (docs/nl-eval-grounded.md, 2026-06-14): the 1.7B was BELOW the
+    /// tool-calling threshold (hallucinated operators, gave up), and the 7B
+    /// Qwen2.5-Instruct was WORSE (no reasoning mode → wrong answers + query
+    /// repetition loops, 2× slower). Qwen3-4B's `<think>` step wins agentic
+    /// tool-calling at the smallest viable size.
     case standard
-    /// Opt-in. `mlx-community/Qwen2.5-7B-Instruct-4bit` (~4.3 GB).
+    /// Opt-in. `mlx-community/Qwen2.5-7B-Instruct-4bit` (~4.3 GB). NOTE: the
+    /// eval found this WORSE than Standard for tool-calling (no reasoning mode);
+    /// kept only as a heavier alternative for non-agentic synthesis.
     case high
 
     public var id: String { rawValue }
@@ -68,7 +73,7 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// chat template) on 2026-06-03.
     public var modelID: String {
         switch self {
-        case .standard: return "mlx-community/Qwen3-1.7B-4bit"
+        case .standard: return "mlx-community/Qwen3-4B-4bit"
         case .high:     return "mlx-community/Qwen2.5-7B-Instruct-4bit"
         }
     }
@@ -86,7 +91,7 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// Settings picker. Kept terse — the picker pairs it with a size hint.
     public var displayLabel: String {
         switch self {
-        case .standard: return "Qwen3 1.7B (MLX)"
+        case .standard: return "Qwen3 4B (MLX)"
         case .high:     return "Qwen2.5 7B Instruct (MLX)"
         }
     }
@@ -103,7 +108,7 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// knows what a switch will cost before they trigger the fetch.
     public var approxDownloadLabel: String {
         switch self {
-        case .standard: return "~1.0 GB"
+        case .standard: return "~2.5 GB"
         case .high:     return "~4.3 GB"
         }
     }
