@@ -211,8 +211,8 @@ extension HelpSection {
                     category: .freeText
                 ),
                 .init(
-                    token: "A|B or A OR B",
-                    description: "OR — either term matches. Lower precedence than +.",
+                    token: "A|B",
+                    description: "OR — either term matches. Lower precedence than +. (Use the | symbol; the word \"or\" is literal.)",
                     example: "cactus|saguaro",
                     category: .freeText
                 ),

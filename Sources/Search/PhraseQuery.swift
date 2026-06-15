@@ -20,7 +20,8 @@
 //   3. **Regex**: `/pattern/` and `/pattern/i` (slack/git/unix convention).
 //      Backed by NSRegularExpression; invalid regex emits a user-visible
 //      error rather than silently returning zero rows.
-//   4. **OR**: `a|b` and `a OR b`. AND (`+`) binds tighter than OR (`|`).
+//   4. **OR**: `a|b` ONLY (the `|` symbol — the bare word "or" is literal).
+//      AND (`+`) binds tighter than OR (`|`).
 //      So `a|b+c` parses as `a OR (b AND c)`. No parens for v1 — flat
 //      precedence keeps the parser simple and documents cleanly.
 //
@@ -538,12 +539,12 @@ public struct PhraseQuery: Sendable, Equatable {
     static func splitOnOR(_ tokens: [String]) -> [[String]] {
         var chunks: [[String]] = [[]]
         for tok in tokens {
-            // Only `|` or an UPPERCASE `OR` is the boolean operator (Google
-            // convention). A lowercase "or" is a literal word — natural
-            // sentences are full of them ("venkat in that or not"), and
-            // treating those as OR exploded the query into "<words> OR not",
-            // matching every message containing "not" (17k loose results).
-            if tok == "|" || tok == "OR" {
+            // ONLY `|` is the boolean OR operator. The bare word "OR"/"or" is
+            // NOT a keyword — natural sentences are full of "or" ("venkat in
+            // that or not"), and treating any of them as an operator exploded
+            // the query into "<words> OR not", matching every message with
+            // "not" (17k loose results). Users who want OR type `|`.
+            if tok == "|" {
                 if !chunks[chunks.count - 1].isEmpty {
                     chunks.append([])
                 }

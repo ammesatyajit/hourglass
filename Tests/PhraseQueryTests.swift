@@ -155,10 +155,16 @@ final class PhraseQueryTests: XCTestCase {
         XCTAssertEqual(ast.groups[0].needles.count, 2)
     }
 
-    func testWhitespaceOR() throws {
+    func testWordORIsLiteralNotOperator() throws {
+        // The bare word "OR" is NOT an operator (only `|` is). So
+        // "cactus OR saguaro" is THREE AND'd literal words — it only matches
+        // a message containing all of "cactus", "or"/"OR", and "saguaro".
+        // (Regression: lowercase "or" in a sentence used to explode queries.)
         let ast = try PhraseQuery.parse("cactus OR saguaro", caseSensitive: false)
-        XCTAssertEqual(ast.groups.count, 1)
-        XCTAssertEqual(ast.groups[0].needles.count, 2)
+        XCTAssertEqual(ast.groups.count, 3, "Three AND words — OR is literal.")
+        XCTAssertTrue(ast.matches(body: "cactus or saguaro, your pick", caseSensitive: false))
+        XCTAssertFalse(ast.matches(body: "just a cactus", caseSensitive: false),
+                       "Missing the literal 'or' and 'saguaro' — must not match.")
     }
 
     func testORMatchesEither() throws {
@@ -169,7 +175,7 @@ final class PhraseQueryTests: XCTestCase {
     }
 
     func testORCaseInsensitiveByDefault() throws {
-        let ast = try PhraseQuery.parse("cactus OR saguaro", caseSensitive: false)
+        let ast = try PhraseQuery.parse("cactus|saguaro", caseSensitive: false)
         XCTAssertTrue(ast.matches(body: "CACTUS forest", caseSensitive: false))
     }
 
@@ -239,19 +245,17 @@ final class PhraseQueryTests: XCTestCase {
         XCTAssertTrue(ast.isEmpty)
     }
 
-    func testStrayOR() throws {
-        // Bare `OR` at start or end should not crash, and should not
-        // produce a malformed group.
+    func testWordORIsAlwaysLiteral() throws {
+        // "OR" is never an operator — it's a literal word everywhere, so
+        // "OR cactus" / "cactus OR" are two-word AND searches. Each matches
+        // only a body containing BOTH the literal "or" and "cactus".
         let ast1 = try PhraseQuery.parse("OR cactus", caseSensitive: false)
-        // "OR cactus" reads as: empty branch + "cactus" branch. The
-        // empty branch drops; we keep just one needle. Whether this
-        // ends up as a 1-group/1-needle AST or stays as an OR group is
-        // a parser detail; we just need it not to crash and to match
-        // bodies containing "cactus".
-        XCTAssertTrue(ast1.matches(body: "the cactus", caseSensitive: false))
+        XCTAssertTrue(ast1.matches(body: "or a cactus maybe", caseSensitive: false))
+        XCTAssertFalse(ast1.matches(body: "just the cactus", caseSensitive: false))
 
         let ast2 = try PhraseQuery.parse("cactus OR", caseSensitive: false)
-        XCTAssertTrue(ast2.matches(body: "the cactus", caseSensitive: false))
+        XCTAssertTrue(ast2.matches(body: "cactus or not", caseSensitive: false))
+        XCTAssertFalse(ast2.matches(body: "just the cactus", caseSensitive: false))
     }
 
     func testUnicodeWordBoundary() throws {
