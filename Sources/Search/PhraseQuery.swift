@@ -231,11 +231,35 @@ public struct PhraseQuery: Sendable, Equatable {
         return true
     }
 
+    /// Fold "smart"/typographic punctuation to ASCII so a query typed with a
+    /// STRAIGHT apostrophe/quote matches a message iOS auto-corrected to CURLY
+    /// ones (and vice-versa). iMessage stores ’ “ ” … by default; search boxes
+    /// produce ' " ... — without this, an exact-phrase search on ANY message
+    /// containing a contraction ("Couldn't") silently fails to match the
+    /// stored "Couldn’t", and the query degrades to a loose token match that
+    /// buries the real message. Applied to BOTH the body and the needle.
+    public static func foldTypography(_ s: String) -> String {
+        guard s.contains(where: { $0 == "\u{2018}" || $0 == "\u{2019}" || $0 == "\u{201B}"
+            || $0 == "\u{201C}" || $0 == "\u{201D}" || $0 == "\u{2013}"
+            || $0 == "\u{2014}" || $0 == "\u{2026}" }) else { return s }
+        var out = s
+        for (from, to) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201B}", "'"),
+                           ("\u{201C}", "\""), ("\u{201D}", "\""),
+                           ("\u{2013}", "-"), ("\u{2014}", "-"), ("\u{2026}", "...")] {
+            out = out.replacingOccurrences(of: from, with: to)
+        }
+        return out
+    }
+
     /// Per-needle match check. Public so callers (FTSSearcher) can
     /// post-filter a recall set.
-    public static func matches(body: String, needle: Needle, caseSensitive: Bool) -> Bool {
+    public static func matches(body rawBody: String, needle: Needle, caseSensitive: Bool) -> Bool {
         switch needle {
-        case .term(let text, let mode):
+        case .term(let rawText, let mode):
+            // Normalize typography on both sides so straight ' " match the
+            // curly ’ “ ” iMessage stores (the "Couldn't" vs "Couldn’t" bug).
+            let body = foldTypography(rawBody)
+            let text = foldTypography(rawText)
             switch mode {
             case .substring:
                 return caseSensitive
@@ -245,6 +269,7 @@ public struct PhraseQuery: Sendable, Equatable {
                 return wordMatch(body: body, term: text, caseSensitive: caseSensitive)
             }
         case .regex(let cr):
+            let body = rawBody
             let nsBody = body as NSString
             let range = NSRange(location: 0, length: nsBody.length)
             return cr.regex.firstMatch(in: body, options: [], range: range) != nil
@@ -513,7 +538,12 @@ public struct PhraseQuery: Sendable, Equatable {
     static func splitOnOR(_ tokens: [String]) -> [[String]] {
         var chunks: [[String]] = [[]]
         for tok in tokens {
-            if tok == "|" || tok.uppercased() == "OR" {
+            // Only `|` or an UPPERCASE `OR` is the boolean operator (Google
+            // convention). A lowercase "or" is a literal word — natural
+            // sentences are full of them ("venkat in that or not"), and
+            // treating those as OR exploded the query into "<words> OR not",
+            // matching every message containing "not" (17k loose results).
+            if tok == "|" || tok == "OR" {
                 if !chunks[chunks.count - 1].isEmpty {
                     chunks.append([])
                 }

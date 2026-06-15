@@ -1472,7 +1472,17 @@ public struct MessageSearch: Sendable {
         // so plain-lowercase queries like `hello` keep their fast
         // 3-variant SQL path.
         let isMixedCase = (text != lower && text != title && text != upper)
-        if isMixedCase {
+        // A term with a "smart-quotable" character (apostrophe, quote, dash,
+        // ellipsis) can't be byte-matched in the blob: iMessage stores the
+        // CURLY variant (’ “ ” — …) but the query carries the STRAIGHT one,
+        // so INSTR misses every such message ("Couldn't" never finds the
+        // stored "Couldn’t"). Route these through the recall-safe branch
+        // (match all attributedBody-only rows) and let the Swift refinement —
+        // which folds typography — do the precise match.
+        let hasFoldableTypography = text.contains {
+            "'’‘\u{2018}\u{2019}\u{201B}\"\u{201C}\u{201D}—–\u{2013}\u{2014}…\u{2026}".contains($0)
+        }
+        if isMixedCase || hasFoldableTypography {
             return (
                 """
                 (

@@ -279,6 +279,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runHeadlessNLEval(query: evalQuery, mode: .singleShot)
             return
         }
+        // HEADLESS KEYWORD-SEARCH probe — model-free (no MLX load), pure SQL.
+        // Runs the exact engine the Spotlight panel uses and prints the result
+        // count + top rows, so search bugs (e.g. curly-apostrophe phrase
+        // mismatch) can be verified without driving the GUI.
+        if let q = ProcessInfo.processInfo.environment["HOURGLASS_SEARCH_EVAL"] {
+            Task { @MainActor in
+                _ = viewModel.retryOpenIfNeeded()
+                guard let search = viewModel.messageSearch else {
+                    print("SEARCHEVAL:: FATAL chat.db unavailable"); exit(1)
+                }
+                let results = (try? search.search(phrase: q)) ?? []
+                print("SEARCHEVAL:: query=\"\(q)\"")
+                print("SEARCHEVAL:: results=\(results.count)")
+                for (i, r) in results.prefix(8).enumerated() {
+                    let body = r.message.body.replacingOccurrences(of: "\n", with: " ")
+                    print("SEARCHEVAL::   [\(i)] \(r.senderName): \(String(body.prefix(80)))")
+                }
+                fflush(stdout)
+                exit(0)
+            }
+            return
+        }
         // HEADLESS 2-PANEL LOAD BENCHMARK — env-gated, diagnostic only. Times
         // every Nostalgia + Vernacular load stage over the real chat.db and
         // dumps `BENCH::` lines, then exit(0). A normal launch (unset) is
