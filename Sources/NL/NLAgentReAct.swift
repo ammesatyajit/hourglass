@@ -1356,13 +1356,26 @@ public extension NLAgent {
         if let window = PlanJSON.TimeWindow(rawValue: trimmed) {
             return window.toDateRange(now: now)
         }
-        // Explicit range: "YYYY-MM-DD..YYYY-MM-DD" or "YYYY-MM-DD - YYYY-MM-DD".
+        // Explicit range: "YYYY-MM-DD..YYYY-MM-DD" (optionally with times).
         let parts = trimmed.components(separatedBy: "..")
-        if parts.count == 2,
-           let lo = NLAgent.parseISODate(parts[0].trimmingCharacters(in: .whitespaces)),
-           let hi = NLAgent.parseISODate(parts[1].trimmingCharacters(in: .whitespaces)),
-           lo <= hi {
-            return lo...hi
+        if parts.count == 2 {
+            let loStr = parts[0].trimmingCharacters(in: .whitespaces)
+            let hiStr = parts[1].trimmingCharacters(in: .whitespaces)
+            if let lo = NLAgent.parseISODate(loStr),
+               var hi = NLAgent.parseISODate(hiStr),
+               lo <= hi {
+                // INCLUSIVE end (B2): a DATE-ONLY upper bound ("2026-05-31")
+                // parses to that day's 00:00:00, so the closed range would
+                // silently DROP the entire final day — "2026-05-01..2026-05-31"
+                // excluded all of May 31 (here, 175 sent messages). Extend a
+                // date-only upper to the last second of that day. A timestamped
+                // upper ("...T14:00:00Z") is left exactly as the model meant it.
+                let hiIsDateOnly = hiStr.count == 10 && !hiStr.contains("T") && !hiStr.contains(":")
+                if hiIsDateOnly {
+                    hi = hi.addingTimeInterval(24 * 3600 - 1)
+                }
+                return lo...hi
+            }
         }
         return nil
     }
