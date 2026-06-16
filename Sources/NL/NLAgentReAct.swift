@@ -658,12 +658,9 @@ public extension NLAgent {
     /// deterministic — no model self-reflection (which hurts <70B models).
     /// The valid set is derived from `TokenPrefix.allCases` so the gate can
     /// never drift from the real parser (B5 intent).
-    static func operatorCorrection(for query: String) -> String? {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return nil }
-
-        // Tokenize on UNQUOTED whitespace (a quoted value may contain spaces,
-        // e.g. with:"Amma Sat"), so we don't split a legitimate value.
+    /// Split a query on UNQUOTED whitespace (a quoted value may contain
+    /// spaces, e.g. `with:"Amma Sat"`), so a legitimate value isn't split.
+    static func tokenizeQuery(_ query: String) -> [String] {
         var tokens: [String] = []
         var cur = ""
         var inQuote = false
@@ -674,6 +671,38 @@ public extension NLAgent {
             } else { cur.append(ch) }
         }
         if !cur.isEmpty { tokens.append(cur) }
+        return tokens
+    }
+
+    /// When a search returns ZERO and the query is all-filters-with-an-
+    /// `in:`/`chat:`-token-but-NO-free-text, the model almost certainly jammed
+    /// a search KEYWORD into the chat-name operator (observed: `in:"gym"` for
+    /// "how many times did I mention gym" → 0, since no chat is named gym).
+    /// Returns targeted guidance so it moves the word to bare free text instead
+    /// of flailing. Precise by construction: a legit filter-only query like
+    /// `from:me type:image` has NO in:/chat: token, so it never fires.
+    static func misplacedKeywordHint(for query: String) -> String? {
+        let validPrefixes = TokenPrefix.allCases.map { $0.rawValue }
+        var hasChatFilter = false
+        var hasFreeText = false
+        for tok in tokenizeQuery(query) {
+            let lower = tok.lowercased()
+            if let p = validPrefixes.first(where: { lower.hasPrefix($0) }) {
+                if p == TokenPrefix.in.rawValue || p == TokenPrefix.chat.rawValue { hasChatFilter = true }
+            } else if tok != "|" && tok != "+" && !tok.isEmpty {
+                hasFreeText = true
+            }
+        }
+        guard hasChatFilter && !hasFreeText else { return nil }
+        return "\nNOTE: your query has NO search keyword — every token is a filter, and in:/chat: match CHAT NAMES, not message content. To search for a WORD, write it as bare text (e.g. `from:me gym`), NOT `in:\"gym\"`."
+    }
+
+    static func operatorCorrection(for query: String) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Tokenize on UNQUOTED whitespace so a quoted value isn't split.
+        let tokens = tokenizeQuery(query)
 
         let validPrefixes = Set(TokenPrefix.allCases.map { $0.rawValue }) // "with:", …
         let validList = TokenPrefix.allCases.map { $0.rawValue }.joined(separator: " ")
@@ -770,7 +799,8 @@ public extension NLAgent {
                     NLAgent.formatResultLine(index: i, result: r)
                 }.joined(separator: "\n")
                 let hint = NLAgent.breadthHint(count: results.count, shown: shown)
-                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)"
+                let kwHint = results.isEmpty ? (Self.misplacedKeywordHint(for: query) ?? "") : ""
+                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)\(kwHint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(results.count) match\(results.count == 1 ? "" : "es")",
@@ -924,10 +954,15 @@ public extension NLAgent {
             }
             do {
                 let n = try await tools.countMatching(query: query, in: dateRange)
+                // A 0 count on an in:/chat:-only query usually means a keyword
+                // was jammed into the chat-name operator — guide, don't let the
+                // model report a confidently-wrong "0".
+                let kwHint = n == 0 ? (Self.misplacedKeywordHint(for: query) ?? "") : ""
+                let obs = kwHint.isEmpty ? "Count = \(n).\n\(Self.answerNowHint)" : "Count = \(n).\(kwHint)"
                 return ToolObservation(
-                    observation: "Count = \(n).\n\(Self.answerNowHint)",
+                    observation: obs,
                     summary: "n=\(n)",
-                    failed: false
+                    failed: !kwHint.isEmpty
                 )
             } catch {
                 return ToolObservation(
