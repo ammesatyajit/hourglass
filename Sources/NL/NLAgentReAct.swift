@@ -693,7 +693,11 @@ public extension NLAgent {
             if let p = validPrefixes.first(where: { lower.hasPrefix($0) }) {
                 if p == TokenPrefix.in.rawValue || p == TokenPrefix.chat.rawValue {
                     hasChatFilter = true
-                } else if p == TokenPrefix.with.rawValue {
+                } else if p == TokenPrefix.with.rawValue || p == TokenPrefix.to.rawValue {
+                    // with:/to: scope to a PERSON. A keyword OR a GROUP-CHAT name
+                    // jammed here matches no person → 0 (observed: `to:"Hao group"`
+                    // for "in the Hao group" → 0; a group is scoped with in:).
+                    // to:me is handled upstream in operatorCorrection (#27).
                     hasPersonFilter = true
                 }
             } else if tok != "|" && tok != "+" && !tok.isEmpty {
@@ -703,8 +707,13 @@ public extension NLAgent {
         guard (hasChatFilter || hasPersonFilter) && !hasFreeText else { return nil }
         var what: [String] = []
         if hasChatFilter { what.append("in:/chat: = CHAT NAME") }
-        if hasPersonFilter { what.append("with: = PERSON") }
-        return "\nNOTE: your query has NO free-text keyword — every token is a FILTER (\(what.joined(separator: ", "))), and none of those match message CONTENT. If you're scoping to a real chat/person and just got 0 in this window, that is a valid 'none found' — answer accordingly. But if you meant to SEARCH for a word, write it as BARE text (the word alone, NOT wrapped in with:/in:/chat:) and retry."
+        if hasPersonFilter { what.append("with:/to: = a PERSON") }
+        var msg = "\nThis returned 0 and every token is a FILTER (\(what.joined(separator: ", "))). If you were scoping to a REAL chat/person and 0 is correct, answer it. Otherwise KEEP your other operators (from:/type:) and fix ONLY the scope, then retry:"
+        if hasPersonFilter {
+            msg += " ▶ a GROUP CHAT is scoped with in:\"<name>\" using its DISTINCTIVE word (e.g. in:\"Hao\", NOT to:/with: and NOT in:\"Hao group\" — the word 'group' usually isn't in the real chat name)."
+        }
+        msg += " ▶ a search WORD goes BARE (not wrapped in any operator)."
+        return msg
     }
 
     /// If `s` is a date ("2026-09-01") or date-range ("2026-09-01..2026-12-31"),
