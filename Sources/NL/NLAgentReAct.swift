@@ -831,7 +831,7 @@ public extension NLAgent {
             msg += "`\(toSelfOps.joined(separator: ", "))` does NOT mean 'received by you'. `to:X` filters messages YOU SENT to X — so `to:me` is contradictory with from:<someone else> and matches the wrong messages. For 'messages <person> sent you', use `from:\"<person>\"` ALONE (drop the to:me). "
         }
         if !dateInChatOps.isEmpty {
-            msg += "DATE in a chat-scope operator: \(dateInChatOps.joined(separator: ", ")). The \"query\" field is for KEYWORDS ONLY — a date is NEVER a keyword. DELETE the in:/chat:<date> token from \"query\" entirely and put the date ONLY in the JSON \"in\" arg. If you have no keyword, send query as \"\" (empty): {\"query\":\"\",\"in\":\"2025-09-01..2026-06-16\"}. Do NOT put the date in both places. "
+            msg += "DATE in a chat-scope operator: \(dateInChatOps.joined(separator: ", ")). A date is NEVER a keyword. Remove ONLY the in:/chat:<date> token from \"query\" and put the date in the JSON \"in\" arg — but KEEP every other operator you had (from:, to:, type:, with:, reactions:). E.g. `from:me in:2026-06-14` → {\"query\":\"from:me\",\"in\":\"2026-06-14\"}. The query becomes \"\" ONLY if the date was its sole content. Do NOT put the date in both places. "
             if anyFutureDate {
                 let f = ISO8601DateFormatter(); f.formatOptions = [.withFullDate]
                 msg += "Also: today is \(f.string(from: now)), so that date is in the FUTURE — for a 'since <month>' query you mean the most-recent PAST occurrence (use last year). "
