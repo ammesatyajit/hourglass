@@ -464,7 +464,13 @@ public extension NLAgent {
                 // tool calls. If the model keeps reading/searching past the cap
                 // without answering, it's spinning — force the final-answer
                 // turn rather than burning the rest of the iteration budget.
-                if Self.isReadTool(call.tool) {
+                // Only count SUCCESSFUL reads: a REJECTED call (failed:true — a
+                // guard corrective, not a real search) shouldn't burn the
+                // recovery budget, or a cascade of correctable mistakes
+                // (with:footgun → arg-injection → …) exhausts the cap before the
+                // model ever lands a clean query (observed on the gym count).
+                // The overall loop is still bounded by maxIterations.
+                if Self.isReadTool(call.tool) && !observation.failed {
                     readToolCalls += 1
                     if readToolCalls >= maxReadToolCalls {
                         forceFinalAnswer = true
