@@ -4722,3 +4722,11 @@ Spring-2026 anchors (continuation of the arc): Atul MCAT (game day May 8) → fa
   - View: `NostalgiaPanel.loadingRow` text = `viewModel.phase?.message ?? "Looking back through your history…"`. (aggregate.build is already built before the VM, so the default covers the brief synchronous pure-detector stretch.)
 - Files changed: `Sources/Dashboard/Insights/VernacularViewModel.swift`, `Sources/Dashboard/Insights/VernacularLoader.swift`, `Sources/Dashboard/Pages/VernacularPage.swift`, `Sources/Dashboard/SocialGraph/SocialGraphPanel.swift`, `Sources/Dashboard/Nostalgia/NostalgiaViewModel.swift`, `Sources/Dashboard/Nostalgia/NostalgiaPanel.swift`.
 - `./scripts/build.sh` → BUILD SUCCEEDED, clean (no errors/warnings on changed files). Left UNCOMMITTED for operator review. NOT verified with a live heavy run (per constraint — vernacular run is ~12-15 min, memory-heavy); phase transitions are wired but the on-screen sequence wasn't watched live.
+
+---
+## Agent-opt loop iteration (2026-06-16): B4 friendsMadeSince + disk-full incident
+Cron loop fired → tested "who were the friends i made since september" (was: topContacts→OLDEST friends, wrong). Built B4 friendsMadeSince tool (contact-merged before/after-cutoff volume split; new = after≥100, share≥0.85, before≤250). Dispatcher clamps future "since" dates (2026-09→2025-09 — the temporal-hallucination). Verified: agent calls friendsMadeSince correctly, date-clamp fires, Beck(1260 before) excluded after the maxBefore cap. Commit 308ae18.
+DISK INCIDENT: data volume hit 99% full → ENOSPC mid-edit. Freed ~5GB by removing the eval-rejected Qwen2.5-7B (4.3GB) + unused Qwen2.5-1.5B from the HF cache. Disk is fundamentally near-full (413GB used) — operator should reclaim space; left their other models (whisper/parakeet/gemma/llama) untouched.
+
+## Agent-opt loop iteration (2026-06-16 #2): plansInWindow VERIFIED
+Tested "what plans did I commit to this week" on the live 4B agent. It now calls plansInWindow (valid `in:last_7d`), gets 63 plan-messages across all chats in one observation, and names 5 distinct plans with citations (vs the old "stopped at 1 commitment"). The plansInWindow tool — built earlier but never live-verified — is confirmed working. No new optimization this fire (PASS).
