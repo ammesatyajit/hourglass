@@ -642,6 +642,80 @@ public extension NLAgent {
         }
     }
 
+    /// B1 operator-validation gate. Inspect a search query string for two
+    /// classes of model error that the search engine otherwise swallows
+    /// SILENTLY (the research's "no silent failures" rule):
+    ///   1. **arg-injection** — `key=value` tokens (e.g. `limit=40`,
+    ///      `in=all_time`) where the model crammed JSON args INTO the query
+    ///      text. The engine treats them as ineffective literal words, so the
+    ///      result set is quietly wrong (observed: Qwen3-4B on the
+    ///      protein-shake recall — `…|eat limit=40 in=all_time` → 49 junk rows).
+    ///   2. **unknown `key:` operators** (e.g. `mood:happy`, `topic:gym`) that
+    ///      aren't in the real grammar — they match nothing → 0 results → the
+    ///      model gives up.
+    /// Returns a corrective observation (so the model SELF-corrects on the next
+    /// turn) when the query is malformed, or nil when it's clean. Purely
+    /// deterministic — no model self-reflection (which hurts <70B models).
+    /// The valid set is derived from `TokenPrefix.allCases` so the gate can
+    /// never drift from the real parser (B5 intent).
+    static func operatorCorrection(for query: String) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Tokenize on UNQUOTED whitespace (a quoted value may contain spaces,
+        // e.g. with:"Amma Sat"), so we don't split a legitimate value.
+        var tokens: [String] = []
+        var cur = ""
+        var inQuote = false
+        for ch in query {
+            if ch == "\"" { inQuote.toggle(); cur.append(ch); continue }
+            if ch == " " && !inQuote {
+                if !cur.isEmpty { tokens.append(cur); cur = "" }
+            } else { cur.append(ch) }
+        }
+        if !cur.isEmpty { tokens.append(cur) }
+
+        let validPrefixes = Set(TokenPrefix.allCases.map { $0.rawValue }) // "with:", …
+        let validList = TokenPrefix.allCases.map { $0.rawValue }.joined(separator: " ")
+        var argInjections: [String] = []
+        var unknownOps: [String] = []
+
+        for tok in tokens {
+            // (1) arg-injection: a bare letter/underscore key immediately
+            // followed by '='. `reactions:>=3` is safe — its key segment
+            // contains ':' and '>' so it fails the letters-only test.
+            if let eq = tok.firstIndex(of: "=") {
+                let key = tok[tok.startIndex..<eq]
+                if !key.isEmpty && key.allSatisfy({ $0.isLetter || $0 == "_" }) {
+                    argInjections.append(String(tok))
+                    continue
+                }
+            }
+            // (2) unknown `word:` operator. Times like `8:30` are safe — the
+            // segment before ':' isn't all letters. A real value after a valid
+            // prefix (before:2026-01-01) keeps its prefix in `validPrefixes`.
+            if let colon = tok.firstIndex(of: ":") {
+                let word = tok[tok.startIndex..<colon]
+                let prefix = String(tok[tok.startIndex...colon]).lowercased() // incl. ':'
+                if !word.isEmpty && word.allSatisfy({ $0.isLetter }) && !validPrefixes.contains(prefix) {
+                    unknownOps.append(String(tok))
+                }
+            }
+        }
+
+        guard !argInjections.isEmpty || !unknownOps.isEmpty else { return nil }
+
+        var msg = "INVALID QUERY — not run (it would fail silently). "
+        if !argInjections.isEmpty {
+            msg += "These are ARGUMENTS stuffed into the query text: \(argInjections.joined(separator: ", ")). Move them out of \"query\" into the JSON args — e.g. {\"query\":\"protein|shake\",\"in\":\"all_time\",\"limit\":40}. "
+        }
+        if !unknownOps.isEmpty {
+            msg += "Unknown operator(s): \(unknownOps.joined(separator: ", ")). "
+        }
+        msg += "Operators valid INSIDE \"query\": \(validList), plus | for OR, + for AND, and *substr* for substring. Retry with a corrected query."
+        return msg
+    }
+
     /// Dispatch ONE tool call. Mutates `lastCandidates` / `lastContacts`
     /// so the loop can pick a hero / contact from the most recent result.
     internal func executeReActTool(
@@ -657,6 +731,9 @@ public extension NLAgent {
         case "search":
             let query = call.args["query"]?.asString ?? ""
             let limit = call.args["limit"]?.asInt ?? maxCandidates
+            if let corrective = Self.operatorCorrection(for: query) {
+                return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
+            }
             do {
                 let results = try await tools.search(
                     query: query,
@@ -823,6 +900,9 @@ public extension NLAgent {
 
         case "countMatching", "count":
             let query = call.args["query"]?.asString ?? ""
+            if let corrective = Self.operatorCorrection(for: query) {
+                return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
+            }
             do {
                 let n = try await tools.countMatching(query: query, in: dateRange)
                 return ToolObservation(
@@ -840,6 +920,9 @@ public extension NLAgent {
 
         case "firstMatching", "oldestMatching":
             let query = call.args["query"]?.asString ?? ""
+            if let corrective = Self.operatorCorrection(for: query) {
+                return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
+            }
             do {
                 let first = try await tools.firstMatching(query: query, in: dateRange)
                 if let first {
