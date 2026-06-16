@@ -697,7 +697,20 @@ public extension NLAgent {
         return "\nNOTE: your query has NO search keyword — every token is a filter, and in:/chat: match CHAT NAMES, not message content. To search for a WORD, write it as bare text (e.g. `from:me gym`), NOT `in:\"gym\"`."
     }
 
-    static func operatorCorrection(for query: String) -> String? {
+    /// If `s` is a date ("2026-09-01") or date-range ("2026-09-01..2026-12-31"),
+    /// return its START date string; else nil. Used to catch a date misplaced
+    /// into a chat-scope (`in:`/`chat:`) operator.
+    static func dateRangeStart(_ s: String) -> String? {
+        let first = s.components(separatedBy: "..").first?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard first.count == 10 else { return nil } // YYYY-MM-DD
+        for (i, c) in first.enumerated() {
+            if i == 4 || i == 7 { if c != "-" { return nil } }
+            else if !c.isNumber { return nil }
+        }
+        return first
+    }
+
+    static func operatorCorrection(for query: String, now: Date) -> String? {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
 
@@ -709,6 +722,8 @@ public extension NLAgent {
         var argInjections: [String] = []
         var unknownOps: [String] = []
         var badTypes: [String] = []
+        var dateInChatOps: [String] = []
+        var anyFutureDate = false
 
         for tok in tokens {
             // (1) arg-injection: a bare letter/underscore key immediately
@@ -745,10 +760,22 @@ public extension NLAgent {
                         badTypes.append(String(tok))
                     }
                 }
+                // (4) date/date-range jammed into a chat-scope operator.
+                // `in:`/`chat:` filter by CHAT NAME — a date there silently
+                // matches no chat (observed: `in:"2026-09-01..2026-12-31"` for
+                // "since September" → 0). Dates belong in the JSON `in` arg.
+                if prefix == TokenPrefix.in.rawValue || prefix == TokenPrefix.chat.rawValue {
+                    let raw = String(tok[tok.index(after: colon)...])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if let startStr = Self.dateRangeStart(raw) {
+                        dateInChatOps.append(String(tok))
+                        if let d = NLAgent.parseISODate(startStr), d > now { anyFutureDate = true }
+                    }
+                }
             }
         }
 
-        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty else { return nil }
+        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !dateInChatOps.isEmpty else { return nil }
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
@@ -759,6 +786,13 @@ public extension NLAgent {
         }
         if !badTypes.isEmpty {
             msg += "Invalid type filter(s): \(badTypes.joined(separator: ", ")). `type:` accepts ONLY image|video|audio|sticker|link|file|text|attachment. For ALL messages (no content filter), OMIT type: entirely — there is no type:message. "
+        }
+        if !dateInChatOps.isEmpty {
+            msg += "DATE in a chat-scope operator: \(dateInChatOps.joined(separator: ", ")). The \"query\" field is for KEYWORDS ONLY — a date is NEVER a keyword. DELETE the in:/chat:<date> token from \"query\" entirely and put the date ONLY in the JSON \"in\" arg. If you have no keyword, send query as \"\" (empty): {\"query\":\"\",\"in\":\"2025-09-01..2026-06-16\"}. Do NOT put the date in both places. "
+            if anyFutureDate {
+                let f = ISO8601DateFormatter(); f.formatOptions = [.withFullDate]
+                msg += "Also: today is \(f.string(from: now)), so that date is in the FUTURE — for a 'since <month>' query you mean the most-recent PAST occurrence (use last year). "
+            }
         }
         msg += "Operators valid INSIDE \"query\": \(validList), plus | for OR, + for AND, and *substr* for substring. Retry with a corrected query."
         return msg
@@ -779,7 +813,7 @@ public extension NLAgent {
         case "search":
             let query = call.args["query"]?.asString ?? ""
             let limit = call.args["limit"]?.asInt ?? maxCandidates
-            if let corrective = Self.operatorCorrection(for: query) {
+            if let corrective = Self.operatorCorrection(for: query, now: now) {
                 return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
             }
             do {
@@ -949,7 +983,7 @@ public extension NLAgent {
 
         case "countMatching", "count":
             let query = call.args["query"]?.asString ?? ""
-            if let corrective = Self.operatorCorrection(for: query) {
+            if let corrective = Self.operatorCorrection(for: query, now: now) {
                 return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
             }
             do {
@@ -974,7 +1008,7 @@ public extension NLAgent {
 
         case "firstMatching", "oldestMatching":
             let query = call.args["query"]?.asString ?? ""
-            if let corrective = Self.operatorCorrection(for: query) {
+            if let corrective = Self.operatorCorrection(for: query, now: now) {
                 return ToolObservation(observation: corrective, summary: "invalid query", failed: true)
             }
             do {
