@@ -679,6 +679,7 @@ public extension NLAgent {
         let validList = TokenPrefix.allCases.map { $0.rawValue }.joined(separator: " ")
         var argInjections: [String] = []
         var unknownOps: [String] = []
+        var badTypes: [String] = []
 
         for tok in tokens {
             // (1) arg-injection: a bare letter/underscore key immediately
@@ -699,11 +700,26 @@ public extension NLAgent {
                 let prefix = String(tok[tok.startIndex...colon]).lowercased() // incl. ':'
                 if !word.isEmpty && word.allSatisfy({ $0.isLetter }) && !validPrefixes.contains(prefix) {
                     unknownOps.append(String(tok))
+                    continue
+                }
+                // (3) B5 — bounded-enum value check for `type:`. `type:message`
+                // / `type:chat` look valid (the prefix is real) but the VALUE
+                // isn't a content type, so the filter silently matches nothing
+                // → confidently-wrong zero counts. Validate against the REAL
+                // parser (TypeFilter.parse → nil = unrecognized). Skip values
+                // with OR/wildcard chars (parser handles those differently).
+                if prefix == TokenPrefix.type.rawValue {
+                    var value = String(tok[tok.index(after: colon)...])
+                    value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if !value.isEmpty && value.allSatisfy({ $0.isLetter }) &&
+                        MessageSearch.TypeFilter.parse(value) == nil {
+                        badTypes.append(String(tok))
+                    }
                 }
             }
         }
 
-        guard !argInjections.isEmpty || !unknownOps.isEmpty else { return nil }
+        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty else { return nil }
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
@@ -711,6 +727,9 @@ public extension NLAgent {
         }
         if !unknownOps.isEmpty {
             msg += "Unknown operator(s): \(unknownOps.joined(separator: ", ")). "
+        }
+        if !badTypes.isEmpty {
+            msg += "Invalid type filter(s): \(badTypes.joined(separator: ", ")). `type:` accepts ONLY image|video|audio|sticker|link|file|text|attachment. For ALL messages (no content filter), OMIT type: entirely — there is no type:message. "
         }
         msg += "Operators valid INSIDE \"query\": \(validList), plus | for OR, + for AND, and *substr* for substring. Retry with a corrected query."
         return msg
