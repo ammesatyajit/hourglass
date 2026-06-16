@@ -24,7 +24,39 @@ public final class VernacularViewModel {
         case empty
     }
 
+    /// Honest, ordered stages of the first-pass analysis, so the loading view can
+    /// show what's actually happening instead of one frozen string for minutes.
+    /// The boundaries mirror the REAL sequence the detached load walks through:
+    /// decode the corpus, run the (parallel) analysis wave, then rank/finalize.
+    /// Each case carries its own short user-facing line (`message`).
+    public enum LoadPhase: Sendable, Equatable, CaseIterable {
+        /// Decoding chat.db / attributedBody into the in-memory corpus.
+        case decoding
+        /// The big analysis wave — n-grams, sentence frames, embeddings, the
+        /// trade graph — all run together off the main actor here.
+        case analyzing
+        /// Ranking what's most "you" and mapping who you trade slang with.
+        case ranking
+
+        public var message: String {
+            switch self {
+            case .decoding: return "Decoding your conversations…"
+            case .analyzing: return "Finding the words that are uniquely yours…"
+            case .ranking:   return "Mapping who you trade slang with…"
+            }
+        }
+
+        /// 0-based position for a determinate progress bar.
+        public var step: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+        /// Total stages — the progress-bar denominator.
+        public static var total: Int { allCases.count }
+    }
+
     public private(set) var state: LoadState = .idle
+    /// Current analysis stage, published so the loading view can render
+    /// phase-aware copy. Nil until the first stage begins (the view falls back to
+    /// a sensible default line), and stays at its last value once `.loaded`.
+    public private(set) var phase: LoadPhase?
     /// New unified Phase-1 profile. Nil unless the additive profile engine was
     /// enabled for this load (`vernacular.profile.enabled`) and produced output.
     public private(set) var profile: VernacularProfile?
@@ -128,9 +160,19 @@ public final class VernacularViewModel {
         // excludes), so the statistical sections still populate.
         let contacts = self.contacts ?? ResolvedContacts(byHandle: [:], allContacts: [])
         state = .loading
+        phase = nil
         let myGen = generation &+ 1
         generation = myGen
         let cap = maxMessages
+
+        // Hops a stage label back to the MainActor as each real boundary begins.
+        // Cheap — just publishes the phase if this is still the live generation.
+        let report: @Sendable (LoadPhase) -> Void = { [weak self] p in
+            Task { @MainActor in
+                guard let self, self.generation == myGen else { return }
+                self.phase = p
+            }
+        }
 
         Task.detached(priority: .utility) { [weak self] in
             let baseline = LinguisticBaseline.load()
@@ -142,6 +184,7 @@ public final class VernacularViewModel {
                 // `messages` LOCAL to this detached task (never on the MainActor
                 // VM) so the Phase-2 frame attribution can reuse the SAME corpus
                 // — and it's freed when this task ends.
+                report(.decoding)
                 let messages = try VernacularLoader.loadMessages(
                     database: database, contacts: contacts, maxMessages: cap)
                 let oooContact = (try? VibeLoader.oneOnOneContactMap(
@@ -152,7 +195,13 @@ public final class VernacularViewModel {
                 let all = VernacularLoader.buildAllSections(
                     messages: messages, contacts: contacts, baseline: baseline,
                     oneOnOneContact: oooContact, chatParticipants: chatParticipants,
-                    profileConfig: profileConfig)
+                    profileConfig: profileConfig,
+                    progress: { phase in
+                        switch phase {
+                        case .analyzing: report(.analyzing)
+                        case .ranking:   report(.ranking)
+                        }
+                    })
                 _ = await self?.applyPhase1(
                     all, placeholder: baseline.isPlaceholder, generation: myGen,
                     messages: messages, contacts: contacts, baseline: baseline,

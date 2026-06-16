@@ -78,6 +78,32 @@ public final class NostalgiaViewModel {
     public private(set) var hiddenFromNostalgia: Set<String> = []
     public private(set) var isLoading: Bool = false
     public private(set) var hasLoadedOnce: Bool = false
+
+    /// Honest, ORDERED stages of the DB-backed load. The seven loaders run
+    /// SEQUENTIALLY in the detached task (chat stories is the slow one), so the
+    /// loading view can show what's actually happening as each begins, instead of
+    /// one frozen line for the whole wait. Nil before the first loader starts (the
+    /// view falls back to a default) and after the load completes.
+    public enum LoadPhase: Sendable, Equatable, CaseIterable {
+        case chatStories
+        case rekindle
+
+        public var message: String {
+            switch self {
+            case .chatStories: return "Replaying your biggest conversations…"
+            case .rekindle:    return "Finding people worth reconnecting with…"
+            }
+        }
+
+        /// 0-based position for a determinate progress bar.
+        public var step: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+        /// Total stages — the progress-bar denominator.
+        public static var total: Int { allCases.count }
+    }
+
+    /// Current DB-backed loader, published so `NostalgiaPanel`'s loading rows show
+    /// phase-aware copy. Nil until the first loader begins / after the load ends.
+    public private(set) var phase: LoadPhase?
     /// Non-fatal error string (e.g. a loader threw). The panel degrades
     /// gracefully — sections that did load still render.
     public private(set) var loadError: String?
@@ -152,27 +178,35 @@ public final class NostalgiaViewModel {
         let myGen = generation &+ 1
         generation = myGen
         isLoading = true
+        phase = nil
         loadError = nil
+
+        // Hops the current loader's stage label back to the MainActor as each one
+        // begins, so the loading rows can render phase-aware copy. Cheap — only
+        // publishes if this is still the live generation.
+        let report: @Sendable (LoadPhase) -> Void = { [weak self] p in
+            Task { @MainActor in
+                guard let self, self.generation == myGen else { return }
+                self.phase = p
+            }
+        }
 
         let database = self.database
         let contacts = self.contacts
-        let series = aggregate.contactSeries
-        let oldest = aggregate.allTimeOldest
-        let newest = aggregate.allTimeNewest
         let loaderCalendar = calendar
 
+        // Only TWO loaders feed visible surfaces: chatStories (the per-chat
+        // timelines) and rekindle (the "Reach out?" prompts). The old beloved /
+        // onThisDay / firstMessages / funnyMoments loaders were folded into the
+        // chat-story moments and no longer render anything — removed (they were
+        // pure dead DB work that slowed every load).
         Task.detached(priority: .utility) { [weak self] in
-            let search = MessageSearch(database: database, contacts: contacts)
-
             var loadedStories: [ChatStory] = []
             var loadedRekindle: [RekindleReminder] = []
-            var loadedBeloved: [BelovedMessage] = []
-            var loadedOnThisDay: [OnThisDayMemory] = []
-            var loadedFirst: [FirstMessage] = []
-            var loadedFunny: [FunnyMoment] = []
             var errors: [String] = []
 
-            // PER-CHAT timelines (the primary surface).
+            // PER-CHAT timelines (the primary surface — the slow one).
+            report(.chatStories)
             do {
                 loadedStories = try ChatStoryBuilder.loadStories(
                     database: database, contacts: contacts, calendar: loaderCalendar
@@ -180,35 +214,16 @@ public final class NostalgiaViewModel {
             } catch { errors.append("Chat stories: \(error.localizedDescription)") }
 
             // REKINDLE reminders (full eligible list — suppression in refilter).
+            report(.rekindle)
             do {
                 loadedRekindle = try RekindleBuilder.load(
                     database: database, contacts: contacts, now: now
                 )
             } catch { errors.append("Rekindle: \(error.localizedDescription)") }
 
-            // Legacy generic surfaces (still fed so the old panel compiles).
-            do {
-                loadedBeloved = try BelovedMessagesLoader(search: search).load()
-            } catch { errors.append("Beloved: \(error.localizedDescription)") }
-            do {
-                loadedOnThisDay = try OnThisDayLoader(search: search, calendar: loaderCalendar)
-                    .load(now: now, historyOldest: oldest, historyNewest: newest)
-            } catch { errors.append("On this day: \(error.localizedDescription)") }
-            do {
-                loadedFirst = try FirstMessageLoader(database: database, contacts: contacts)
-                    .load(series: series)
-            } catch { errors.append("First messages: \(error.localizedDescription)") }
-            do {
-                loadedFunny = try FunnyMomentsLoader(database: database, contacts: contacts).load()
-            } catch { errors.append("Funny moments: \(error.localizedDescription)") }
-
             await self?.apply(
                 chatStories: loadedStories,
                 rekindle: loadedRekindle,
-                beloved: loadedBeloved,
-                onThisDay: loadedOnThisDay,
-                firstMessages: loadedFirst,
-                funnyMoments: loadedFunny,
                 error: errors.isEmpty ? nil : errors.joined(separator: "; "),
                 generation: myGen
             )
@@ -218,22 +233,15 @@ public final class NostalgiaViewModel {
     private func apply(
         chatStories: [ChatStory],
         rekindle: [RekindleReminder],
-        beloved: [BelovedMessage],
-        onThisDay: [OnThisDayMemory],
-        firstMessages: [FirstMessage],
-        funnyMoments: [FunnyMoment],
         error: String?,
         generation: Int
     ) {
         guard generation == self.generation else { return }
         self.allChatStories = chatStories
         self.allRekindle = rekindle
-        self.allBeloved = beloved
-        self.allOnThisDay = onThisDay
-        self.allFirstMessages = firstMessages
-        self.allFunnyMoments = funnyMoments
         self.loadError = error
         self.isLoading = false
+        self.phase = nil
         self.hasLoadedOnce = true
         refilter()
     }

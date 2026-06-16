@@ -113,6 +113,18 @@ public struct VernacularMessage: Sendable, Equatable {
 
 public enum VernacularLoader {
 
+    /// Coarse, ORDERED stages `buildAllSections` reports as it runs, so a caller
+    /// can drive phase-aware loading copy. The analysis itself is a parallel wave
+    /// (n-grams, frames, embeddings, vocab all at once), so these are the honest
+    /// boundaries the user actually waits through — not the per-extractor
+    /// sub-stages, which don't run sequentially.
+    public enum LoadProgress: Sendable {
+        /// The parallel analysis wave is starting.
+        case analyzing
+        /// The wave finished; ranking the profile-backed spread / insights now.
+        case ranking
+    }
+
     private static let logger = Logger(subsystem: "com.satyajit.hourglass", category: "Vernacular")
 
     static let unknownLabel = VernacularAnalyzer.unknownLabel
@@ -593,7 +605,8 @@ public enum VernacularLoader {
         sectionsOptions: VernacularAnalyzer.SectionsOptions = .default,
         vibeOptions: VibeClusterer.Options = .default,
         profileConfig: VernacularConfig = .disabled,
-        profileSubject: VernacularSubject = .you
+        profileSubject: VernacularSubject = .you,
+        progress: (@Sendable (LoadProgress) -> Void)? = nil
     ) -> AllSections {
         let queue = DispatchQueue.global(qos: .userInitiated)
         // Bound the transient working sets: only this many corpus-heavy stages
@@ -625,6 +638,10 @@ public enum VernacularLoader {
                 work()
             }
         }
+
+        // The analysis wave is the long stretch — report it before launching so
+        // the loading copy advances from "decoding" to "analyzing".
+        progress?(.analyzing)
 
         let wave1 = DispatchGroup()
         runStage(in: wave1) {
@@ -677,6 +694,9 @@ public enum VernacularLoader {
         // VibeGraphCanvas stay in the tree as scaffolding for that work.
         results.vibe = .empty
         wave1.wait()
+
+        // Wave done — ranking the spread / insights is the final stretch.
+        progress?(.ranking)
 
         let profileForSpread = results.profile ?? .disabled
         if profileForSpread.isEnabled {

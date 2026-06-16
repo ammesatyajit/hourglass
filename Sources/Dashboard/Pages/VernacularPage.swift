@@ -114,6 +114,7 @@ struct VernacularPage: View {
                     vernacularGraph: nil,
                     vernacularWords: [],
                     vernacularTemplates: [],
+                    vernacularLoadingMessage: vernacular.phase?.message,
                     spreadProfile: vernacular.spreadProfile,
                     pinnedInfluence: vernacular.pinnedInfluence,
                     onPersonInfluence: { vernacular.personInfluence(for: $0) },
@@ -173,11 +174,24 @@ struct VernacularPage: View {
         VernacularProfileHiddenStore.save(next)
     }
 
-    /// A first-paint placeholder for the words section while Phase 1 runs.
+    /// A first-paint placeholder for the words section while Phase 1 runs. The
+    /// subtitle tracks the live analysis stage (`vernacular.phase`) so the user
+    /// sees honest progress instead of one frozen line for minutes; it falls back
+    /// to a sensible default before the first stage reports.
     private var universeLoadingState: some View {
-        StatPanel(title: "The words that are yours", subtitle: "Finding the words that are uniquely yours…") {
+        StatPanel(title: "The words that are yours",
+                  subtitle: vernacular.phase?.message ?? "Finding the words that are uniquely yours…") {
             VStack(spacing: Space.md) {
-                ProgressView().controlSize(.large)
+                // Determinate bar — advances through decode → analyze → rank.
+                if let phase = vernacular.phase {
+                    ProgressView(value: Double(phase.step + 1),
+                                 total: Double(VernacularViewModel.LoadPhase.total))
+                        .progressViewStyle(.linear)
+                        .tint(.purple)
+                        .frame(maxWidth: 300)
+                } else {
+                    ProgressView().controlSize(.large)
+                }
                 Text("Reading every message on this Mac — the first pass takes a few minutes. It's all on-device; nothing leaves your computer. This page fills in by itself when it's done.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

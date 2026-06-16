@@ -291,11 +291,24 @@ public struct NostalgiaPanel: View {
     // MARK: - Shared bits
 
     private var loadingRow: some View {
-        HStack(spacing: Space.sm) {
-            ProgressView().controlSize(.small)
-            Text("Looking back through your history…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                ProgressView().controlSize(.small)
+                // Tracks the live DB-backed loader (`viewModel.phase`) so the
+                // wait reads as honest progress; falls back to a default before
+                // the first loader reports.
+                Text(viewModel.phase?.message ?? "Looking back through your history…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            // Determinate bar — fills as the (two) real stages complete.
+            if let phase = viewModel.phase {
+                ProgressView(value: Double(phase.step + 1),
+                             total: Double(NostalgiaViewModel.LoadPhase.total))
+                    .progressViewStyle(.linear)
+                    .tint(.pink)
+                    .frame(maxWidth: 260)
+            }
         }
         .padding(.vertical, Space.sm)
     }

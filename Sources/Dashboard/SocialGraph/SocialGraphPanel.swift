@@ -55,6 +55,11 @@ public struct SocialGraphPanel: View {
     /// source+adopter-only light-up.
     private let vernacularWords: [VocabItem]
     private let vernacularTemplates: [SnowcloneTemplate]
+    /// Live analysis-stage line for the Vocabulary lens's loading state, fed in by
+    /// the Vernacular page from the SAME `VernacularViewModel.phase` that drives
+    /// the words section — so both surfaces advance their copy in lockstep. Nil
+    /// before the first stage reports; the loading state then shows its default.
+    private let vernacularLoadingMessage: String?
     private let spreadProfile: SpreadProfile?
     private let pinnedInfluence: PersonInfluence?
     private let onPersonInfluence: (String) -> Void
@@ -99,6 +104,7 @@ public struct SocialGraphPanel: View {
         vernacularGraph: VernacularGraph? = nil,
         vernacularWords: [VocabItem] = [],
         vernacularTemplates: [SnowcloneTemplate] = [],
+        vernacularLoadingMessage: String? = nil,
         spreadProfile: SpreadProfile? = nil,
         pinnedInfluence: PersonInfluence? = nil,
         onPersonInfluence: @escaping (String) -> Void = { _ in },
@@ -111,6 +117,7 @@ public struct SocialGraphPanel: View {
         self.vernacularGraph = vernacularGraph
         self.vernacularWords = vernacularWords
         self.vernacularTemplates = vernacularTemplates
+        self.vernacularLoadingMessage = vernacularLoadingMessage
         self.spreadProfile = spreadProfile
         self.pinnedInfluence = pinnedInfluence
         self.onPersonInfluence = onPersonInfluence
@@ -127,6 +134,7 @@ public struct SocialGraphPanel: View {
         vernacularGraph: VernacularGraph? = nil,
         vernacularWords: [VocabItem] = [],
         vernacularTemplates: [SnowcloneTemplate] = [],
+        vernacularLoadingMessage: String? = nil,
         spreadProfile: SpreadProfile? = nil,
         pinnedInfluence: PersonInfluence? = nil,
         onPersonInfluence: @escaping (String) -> Void = { _ in },
@@ -138,6 +146,7 @@ public struct SocialGraphPanel: View {
         self.vernacularGraph = vernacularGraph
         self.vernacularWords = vernacularWords
         self.vernacularTemplates = vernacularTemplates
+        self.vernacularLoadingMessage = vernacularLoadingMessage
         self.spreadProfile = spreadProfile
         self.pinnedInfluence = pinnedInfluence
         self.onPersonInfluence = onPersonInfluence
@@ -362,7 +371,9 @@ public struct SocialGraphPanel: View {
         VStack(spacing: Space.sm) {
             ProgressView()
                 .controlSize(.large)
-            Text("Reading how your circle talks")
+            // Tracks the same analysis stage as the words section; falls back to
+            // the static line before the first phase reports.
+            Text(vernacularLoadingMessage ?? "Reading how your circle talks")
                 .font(.headline)
             Text("Finding the words you trade takes a couple of minutes the first time — it's scanning every message on this Mac, nothing leaves your computer. The graph fills in by itself when it's done.")
                 .font(.subheadline)
