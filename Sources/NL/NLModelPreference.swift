@@ -54,12 +54,11 @@ public enum NLModelFamily: Sendable, Equatable {
 /// reliable synthesis + general ReAct (Codex #3). `high` is the opt-in 7B
 /// for users who want the best answers and have the disk + RAM headroom.
 public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifiable {
-    /// Default. `mlx-community/Qwen3-4B-4bit` (~2.5 GB). Chosen by the grounded
-    /// NL-eval (docs/nl-eval-grounded.md, 2026-06-14): the 1.7B was BELOW the
-    /// tool-calling threshold (hallucinated operators, gave up), and the 7B
-    /// Qwen2.5-Instruct was WORSE (no reasoning mode → wrong answers + query
-    /// repetition loops, 2× slower). Qwen3-4B's `<think>` step wins agentic
-    /// tool-calling at the smallest viable size.
+    /// Default. `mlx-community/Qwen3-1.7B-4bit` (~1.0 GB). RAM stopgap: the
+    /// grounded eval (docs/nl-eval-grounded.md) showed Qwen3-4B is the better
+    /// tool-caller, but the model container is pinned resident for the app's
+    /// lifetime, so a 4B default OOMs the app (~2.5GB stuck after one query).
+    /// Restore 4B here once idle-unload frees the container post-query.
     case standard
     /// Opt-in. `mlx-community/Qwen2.5-7B-Instruct-4bit` (~4.3 GB). NOTE: the
     /// eval found this WORSE than Standard for tool-calling (no reasoning mode);
@@ -73,7 +72,15 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// chat template) on 2026-06-03.
     public var modelID: String {
         switch self {
-        case .standard: return "mlx-community/Qwen3-4B-4bit"
+        // REVERTED to 1.7B (2026-06-15): the model container is held resident
+        // for the app's whole lifetime (ModelDownloader never nils it; only
+        // GPU.clearCache runs after a query), so a 4B default pins ~2.5GB
+        // forever after the first NL query and OOMs the app. Restore 4B as the
+        // default ONLY after idle-unload lands (free the container post-query;
+        // reload from disk cache ~3s on next ask). 4B is the better model
+        // (see docs/nl-eval-grounded.md) — this is a RAM stopgap, not a quality
+        // call.
+        case .standard: return "mlx-community/Qwen3-1.7B-4bit"
         case .high:     return "mlx-community/Qwen2.5-7B-Instruct-4bit"
         }
     }
@@ -91,7 +98,7 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// Settings picker. Kept terse — the picker pairs it with a size hint.
     public var displayLabel: String {
         switch self {
-        case .standard: return "Qwen3 4B (MLX)"
+        case .standard: return "Qwen3 1.7B (MLX)"
         case .high:     return "Qwen2.5 7B Instruct (MLX)"
         }
     }
@@ -108,7 +115,7 @@ public enum NLModelQuality: String, Sendable, Equatable, CaseIterable, Identifia
     /// knows what a switch will cost before they trigger the fetch.
     public var approxDownloadLabel: String {
         switch self {
-        case .standard: return "~2.5 GB"
+        case .standard: return "~1.0 GB"
         case .high:     return "~4.3 GB"
         }
     }
