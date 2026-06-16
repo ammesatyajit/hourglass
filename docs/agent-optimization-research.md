@@ -45,3 +45,4 @@ Corollary (research): for tool-calling, "architecture/training matters more than
 ## Running results log (the loop appends here)
 <!-- each loop fire: date · query · model answer · score · failure mode · optimization applied -->
 - 2026-06-16 · `Couldn't even tell u if venkat in that or not` (keyword) · 1 result (Atul) · **PASS** · regression guard for apostrophe+OR fix · optimization: none (harness validation)
+- 2026-06-16 · `who were the friends i made since september` (agentic) · NOW calls friendsMadeSince + date-clamp fired (2026-09→2025-09); returned Saketh/Justin/Karen/Annika; Beck (1260 before) excluded after tightening · **PASS (was topContacts→old friends)** · failure: wrong-tool + temporal-hallucination · **B4 applied** (friendsMadeSince tool, contact-merged before/after split, future-date clamp, maxBefore=250 cap). B2 partially baked in (date clamp). Threshold for Karen/Annika unverified by operator.

@@ -750,6 +750,41 @@ public extension NLAgent {
                 )
             }
 
+        case "friendsMadeSince", "newFriends", "friendsSince":
+            // "Who did I become friends with since <date>." Contact-merged
+            // before/after-cutoff volume split — the right answer for "new
+            // friends", where topContacts (volume) returns your OLDEST friends.
+            // Cutoff = the `since` arg (YYYY-MM-DD) or the resolved range's
+            // lower bound; default 1 year ago. Guard a future cutoff (the
+            // temporal-hallucination failure: "since September" → 2026-09).
+            var cutoff = call.args["since"]?.asString.flatMap(NLAgent.parseISODate)
+                ?? dateRange?.lowerBound
+                ?? Calendar.current.date(byAdding: .year, value: -1, to: now)!
+            if cutoff > now {
+                // The model picked a future cutoff — clamp to the most recent
+                // PAST occurrence of that month/day (≈ "since September" → last Sept).
+                cutoff = Calendar.current.date(byAdding: .year, value: -1, to: cutoff) ?? now
+            }
+            let limit = call.args["limit"]?.asInt ?? 12
+            do {
+                let friends = try await tools.friendsMadeSince(
+                    cutoff, minAfter: 100, minAfterShare: 0.85, maxBefore: 250, limit: limit)
+                lastCandidates = []
+                let since = NLAgent.formatISODate(cutoff)
+                let obs: String
+                if friends.isEmpty {
+                    obs = "No new contacts found since \(since) (nobody crossed the volume threshold). The user may have made no new close friends in that window."
+                } else {
+                    let lines = friends.enumerated().map { (i, f) in
+                        "[\(i)] \(f.name): \(f.after) msgs after \(since), \(f.before) before"
+                    }.joined(separator: "\n")
+                    obs = "People you became friends with since \(since) (almost all their messages post-date it; old friends excluded):\n\(lines)\nAnswer with these names."
+                }
+                return ToolObservation(observation: obs, summary: "\(friends.count) new friends", failed: false)
+            } catch {
+                return ToolObservation(observation: "friendsMadeSince failed: \(error)", summary: "failed", failed: true)
+            }
+
         case "plansInWindow", "plans", "commitments":
             // The "what did I commit to / plan in this window" tool. One
             // observation: YOUR cue-filtered sent messages across ALL chats,
@@ -971,7 +1006,7 @@ public extension NLAgent {
 
         default:
             return ToolObservation(
-                observation: "Unknown tool '\(call.tool)'. Available: plansInWindow, search, readMessages, countMatching, firstMatching, topContacts, topGroups, overviewStats, messagesAroundTime, context, rawSearchSQL. Emit a final answer with {\"answer\": \"...\"} when done.",
+                observation: "Unknown tool '\(call.tool)'. Available: friendsMadeSince, plansInWindow, search, readMessages, countMatching, firstMatching, topContacts, topGroups, overviewStats, messagesAroundTime, context, rawSearchSQL. Emit a final answer with {\"answer\": \"...\"} when done.",
                 summary: "unknown",
                 failed: true
             )
@@ -1009,6 +1044,9 @@ public extension NLAgent {
         You have up to 8 tool calls — spend them adapting breadth, not guessing.
 
         Available tools (priority order):
+
+        0a) {"tool":"friendsMadeSince","args":{"since":"YYYY-MM-DD","limit":<int>}}
+           Who the user BECAME FRIENDS WITH since a date — contacts whose messages are almost all AFTER the date (a new relationship), old friends excluded. Use for "who are my new friends", "people I met since X", "friends I made this year". Pass `since` as the most-recent PAST occurrence (e.g. "since September" with today in June → LAST year's Sept-01). Do NOT use topContacts — that returns your OLDEST friends, the opposite.
 
         0) {"tool":"plansInWindow","args":{"in":"<date-range>","limit":<int>}}
            Your cue-filtered SENT messages across ALL chats in a window — the things you said you'd do (let's/I'll/gonna/confirmed/tmrw/meeting/times…), chronological, each tagged with its chat. Use this FIRST and usually ONLY for "what plans/commitments did I make this <week/window>", "what did I agree to", "what's coming up". One observation holds every plan across every chat — read it and summarize the DISTINCT plans (dedupe, drop non-commitments, name who each is with). Do NOT then dive into one chat — you already have the full picture.
@@ -1133,7 +1171,8 @@ public extension NLAgent {
         switch tool {
         case "search", "readMessages", "messagesAroundTime", "context",
              "firstMatching", "oldestMatching", "rawSearchSQL",
-             "plansInWindow", "plans", "commitments":
+             "plansInWindow", "plans", "commitments",
+             "friendsMadeSince", "newFriends", "friendsSince":
             return true
         default:
             return false

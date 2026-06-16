@@ -23,6 +23,19 @@
 import Foundation
 import GRDB
 
+/// One contact the user appears to have befriended after a cutoff date — the
+/// result shape of `friendsMadeSince`. `afterShare` ≈ 1.0 means nearly all
+/// their messages post-date the cutoff (a genuinely new relationship).
+public struct NewFriend: Sendable, Equatable {
+    public let name: String
+    public let before: Int
+    public let after: Int
+    public var afterShare: Double { after == 0 ? 0 : Double(after) / Double(before + after) }
+    public init(name: String, before: Int, after: Int) {
+        self.name = name; self.before = before; self.after = after
+    }
+}
+
 /// Tool surface exposed to `NLAgent`. Every tool runs against the existing
 /// chat.db / FTS5 mirror — the NL surface is strictly read-only on the
 /// data plane.
@@ -196,6 +209,22 @@ public protocol NLAgentTools: Sendable {
         limit: Int
     ) async throws -> [MessageSearch.Result]
 
+    /// "Who did I become friends with since <date>." For each MERGED contact
+    /// (handles unified via the AddressBook — so a phone + a new email count
+    /// as ONE person), compares message volume BEFORE vs AFTER the cutoff. A
+    /// NEW friend's messages are almost all after the cutoff; an OLD friend
+    /// who simply switched handles still has heavy before-volume on their old
+    /// handle and is correctly excluded. Returns contacts ranked by post-cutoff
+    /// volume — the answer "who are my new friends" that `topContacts` (volume,
+    /// not recency) gets exactly backwards.
+    func friendsMadeSince(
+        _ cutoff: Date,
+        minAfter: Int,
+        minAfterShare: Double,
+        maxBefore: Int,
+        limit: Int
+    ) async throws -> [NewFriend]
+
     // MARK: - Person → 1:1 chat resolution (deterministic scoped path)
 
     /// Resolve a person phrase ("Annika", "annika renganathan") to their
@@ -276,6 +305,7 @@ public extension NLAgentTools {
     }
     func rawSearchSQL(sql: String, limit: Int) async throws -> [[String: String]] { [] }
     func plansInWindow(in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [MessageSearch.Result] { [] }
+    func friendsMadeSince(_ cutoff: Date, minAfter: Int, minAfterShare: Double, maxBefore: Int, limit: Int) async throws -> [NewFriend] { [] }
 
     /// Default: no resolution. The production `MessageSearchTools` overrides
     /// this with the real AddressBook + chat.db lookup. Mocks that exercise
@@ -1181,6 +1211,69 @@ public struct MessageSearchTools: NLAgentTools {
 
         // Chronological (oldest → newest) so the week reads as a story, capped.
         return Array(results.sorted { $0.message.date < $1.message.date }.suffix(safeLimit))
+    }
+
+    /// Production `friendsMadeSince`. One pass over RECEIVED messages
+    /// (`is_from_me = 0`, so each row attributes cleanly to its sender's
+    /// handle), counting before/after the cutoff per handle, then MERGING by
+    /// resolved contact name (the critical step — a person's phone + new email
+    /// handles fold into one, so an old friend who switched handles keeps their
+    /// before-volume and is excluded). A new friend = `after >= minAfter` AND
+    /// `after/(before+after) >= minAfterShare`.
+    public func friendsMadeSince(
+        _ cutoff: Date,
+        minAfter: Int,
+        minAfterShare: Double,
+        maxBefore: Int,
+        limit: Int
+    ) async throws -> [NewFriend] {
+        let cutNS = MessageDate.nanosecondsSinceMacEpoch(from: cutoff)
+        let cutS = MessageDate.secondsSinceMacEpoch(from: cutoff)
+        let sql = """
+            SELECT h.id AS handle,
+                   SUM(CASE WHEN (m.date > 1000000000000 AND m.date < ?)
+                             OR (m.date <= 1000000000000 AND m.date < ?) THEN 1 ELSE 0 END) AS before_c,
+                   SUM(CASE WHEN (m.date > 1000000000000 AND m.date >= ?)
+                             OR (m.date <= 1000000000000 AND m.date >= ?) THEN 1 ELSE 0 END) AS after_c
+            FROM message m
+            JOIN handle h ON h.ROWID = m.handle_id
+            WHERE m.is_from_me = 0 AND m.associated_message_type = 0
+            GROUP BY h.id
+            """
+        let chatDB = self.chatDB
+        let contacts = instr.contacts
+        let safeLimit = max(1, min(limit, 30))
+        let minShare = min(max(minAfterShare, 0), 1)
+        let minA = max(1, minAfter)
+        return try await Task.detached(priority: .userInitiated) { () throws -> [NewFriend] in
+            try chatDB.dbQueue.read { db -> [NewFriend] in
+                let rows = try Row.fetchAll(db, sql: sql,
+                                            arguments: [cutNS, cutS, cutNS, cutS])
+                // Merge handles → one entry per resolved contact name.
+                var byName: [String: (before: Int, after: Int)] = [:]
+                for row in rows {
+                    guard let handle: String = row["handle"] else { continue }
+                    let name = contacts.name(forRawHandle: handle)
+                    // Skip bare handles we can't resolve to a real contact name.
+                    guard name != handle, !name.isEmpty, name != "(unknown)" else { continue }
+                    let b: Int = row["before_c"] ?? 0
+                    let a: Int = row["after_c"] ?? 0
+                    var acc = byName[name] ?? (0, 0)
+                    acc.before += b; acc.after += a
+                    byName[name] = acc
+                }
+                return byName
+                    .map { NewFriend(name: $0.key, before: $0.value.before, after: $0.value.after) }
+                    // A NEW friend barely existed before the cutoff — both the
+                    // ratio AND an absolute before-cap must hold, so a heavily-
+                    // active OLD friend (Beck: 1260 before) can't pass on ratio
+                    // alone the way share≥0.9 let her.
+                    .filter { $0.after >= minA && $0.afterShare >= minShare && $0.before <= maxBefore }
+                    .sorted { $0.after > $1.after }
+                    .prefix(safeLimit)
+                    .map { $0 }
+            }
+        }.value
     }
 
     /// Read-only SQL escape hatch. The LLM is instructed to NEVER call
