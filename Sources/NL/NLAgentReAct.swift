@@ -1166,6 +1166,12 @@ public extension NLAgent {
             LAST RESORT. ONLY if no other tool fits. Avoid this — treat as broken-glass.
 
         Date ranges (the "in" arg): pass a string like "last_7d", "last_14d", "last_30d", "last_3mo", "last_1y", "all_time", or explicit "YYYY-MM-DD..YYYY-MM-DD". For year scopes use "YYYY-01-01..YYYY-12-31".
+        CALENDAR vs ROLLING — they are DIFFERENT questions, pick by the user's words:
+          • "last month" / "this month" → in:"last_month" / "this_month" (a full CALENDAR month). NOT last_30d.
+          • "last week" / "this week" → in:"last_week" / "this_week" (a full CALENDAR week). NOT last_7d.
+          • "yesterday" / "today" → in:"yesterday" / "today".
+          • "last 30 days" / "past 30 days" (rolling) → in:"last_30d". "last 7 days" → in:"last_7d".
+        Use the rolling forms ONLY when the user literally says a number of days. Default a bare "last month/week" to the calendar form. Do NOT also put a last:Nd operator in the query when you use a calendar "in" — the "in" arg already scopes the window.
 
         Observation rows are numbered [0], [1], … and contain timestamp, ISO date, chat name, chat_id, sender, and full body — read them carefully to decide the next move AND to cite as evidence.
 
@@ -1209,10 +1215,10 @@ public extension NLAgent {
           ... Good range — read these 42 carefully.
         Turn 2: {"answer":"The argument started May 5 when Annika said \\"I can't believe you forgot AGAIN — this is the third time.\\" You apologized; she said nothing changes; it cooled by May 7 when you agreed to talk it through at 8pm.","hero_index":2,"evidence_indices":[2,3,4,6]}
 
-        Q: how many photos did I send Mom last month
-        Turn 1: {"tool":"countMatching","args":{"query":"from:me to:\\"Mom\\" type:image last:30d","in":"last_30d"}}
+        Q: how many photos did I send Mom last month   (CALENDAR month — note in:"last_month", and NO last:Nd in the query)
+        Turn 1: {"tool":"countMatching","args":{"query":"from:me to:\\"Mom\\" type:image","in":"last_month"}}
         Observation: Count = 14.
-        Turn 2: {"answer":"You sent Mom 14 photos in the last 30 days.","hero_index":null,"evidence_indices":[]}
+        Turn 2: {"answer":"You sent Mom 14 photos last month.","hero_index":null,"evidence_indices":[]}
         """
     }
 

@@ -55,24 +55,59 @@ public struct PlanJSON: Codable, Sendable, Equatable {
         case last6mo = "last_6mo"
         case last1y = "last_1y"
         case allTime = "all_time"
+        // Calendar-aligned windows (B2). DISTINCT from the rolling windows
+        // above: "last month" is the PREVIOUS calendar month in full — a
+        // different question from "last 30 days" (rolling). Resolving these
+        // in code keeps the model out of date arithmetic, where relative-date
+        // accuracy degrades sharply.
+        case today = "today"
+        case yesterday = "yesterday"
+        case thisWeek = "this_week"
+        case lastWeek = "last_week"
+        case thisMonth = "this_month"
+        case lastMonth = "last_month"
 
         /// Convert this abstract window to a concrete date range anchored
         /// at `now`. Returns nil for `all_time` (the SQL search engine
         /// interprets a nil range as "no date filter").
         public func toDateRange(now: Date) -> ClosedRange<Date>? {
             let cal = Calendar(identifier: .gregorian)
-            let lower: Date?
             switch self {
-            case .last24h:  lower = cal.date(byAdding: .hour,   value: -24,   to: now)
-            case .last7d:   lower = cal.date(byAdding: .day,    value: -7,    to: now)
-            case .last14d:  lower = cal.date(byAdding: .day,    value: -14,   to: now)
-            case .last30d:  lower = cal.date(byAdding: .day,    value: -30,   to: now)
-            case .last3mo:  lower = cal.date(byAdding: .month,  value: -3,    to: now)
-            case .last6mo:  lower = cal.date(byAdding: .month,  value: -6,    to: now)
-            case .last1y:   lower = cal.date(byAdding: .year,   value: -1,    to: now)
+            // Rolling windows — look back from `now`, no boundary alignment.
+            case .last24h:  return rollingRange(.hour,  -24, cal, now)
+            case .last7d:   return rollingRange(.day,    -7, cal, now)
+            case .last14d:  return rollingRange(.day,   -14, cal, now)
+            case .last30d:  return rollingRange(.day,   -30, cal, now)
+            case .last3mo:  return rollingRange(.month,  -3, cal, now)
+            case .last6mo:  return rollingRange(.month,  -6, cal, now)
+            case .last1y:   return rollingRange(.year,   -1, cal, now)
             case .allTime:  return nil
+            // Calendar windows — aligned to day/week/month boundaries.
+            case .today:
+                return cal.startOfDay(for: now)...now
+            case .yesterday:
+                let startToday = cal.startOfDay(for: now)
+                guard let startY = cal.date(byAdding: .day, value: -1, to: startToday) else { return nil }
+                return startY...startToday.addingTimeInterval(-1)
+            case .thisWeek:
+                guard let wk = cal.dateInterval(of: .weekOfYear, for: now) else { return nil }
+                return wk.start...now
+            case .lastWeek:
+                guard let wk = cal.dateInterval(of: .weekOfYear, for: now),
+                      let prev = cal.date(byAdding: .weekOfYear, value: -1, to: wk.start) else { return nil }
+                return prev...wk.start.addingTimeInterval(-1)
+            case .thisMonth:
+                guard let mo = cal.dateInterval(of: .month, for: now) else { return nil }
+                return mo.start...now
+            case .lastMonth:
+                guard let mo = cal.dateInterval(of: .month, for: now),
+                      let prev = cal.date(byAdding: .month, value: -1, to: mo.start) else { return nil }
+                return prev...mo.start.addingTimeInterval(-1)
             }
-            guard let lower else { return nil }
+        }
+
+        private func rollingRange(_ unit: Calendar.Component, _ value: Int, _ cal: Calendar, _ now: Date) -> ClosedRange<Date>? {
+            guard let lower = cal.date(byAdding: unit, value: value, to: now) else { return nil }
             return lower...now
         }
     }
