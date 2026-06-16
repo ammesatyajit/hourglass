@@ -1493,6 +1493,14 @@ public extension NLAgent {
                 return lo...hi
             }
         }
+        // Bare SINGLE date "YYYY-MM-DD" → that whole calendar day [00:00..23:59:59].
+        // Without this, a single date in the `in` arg fell through to nil (NO date
+        // filter) → counted ALL messages (observed B2 bug: in:"2026-06-14" →
+        // 544,105 instead of ~371 for that day). "on june 14" naturally maps here.
+        if trimmed.count == 10, !trimmed.contains("T"), !trimmed.contains(":"),
+           let d = NLAgent.parseISODate(trimmed) {
+            return d...d.addingTimeInterval(24 * 3600 - 1)
+        }
         return nil
     }
 
