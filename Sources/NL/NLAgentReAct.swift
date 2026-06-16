@@ -1527,10 +1527,21 @@ public extension NLAgent {
 
     /// Render a tool-args dict as a short label for the trace UI.
     internal static func summarizeArgs(_ args: [String: NLToolArg]) -> String {
-        let interesting: [String] = ["query", "limit", "in", "date", "guid"]
+        // Include EVERY distinguishing arg so the duplicate-breaker doesn't
+        // false-flag a legit DIFFERENT call as a repeat: e.g. readMessages for a
+        // different `with` person (same date), or messagesAroundTime zooming a
+        // different `chat_id` (same date) — both previously collided because the
+        // signature only had query/in/date (observed: messagesAroundTime
+        // chat_id=null vs chat_id=1419 blocked). Int args (chat_id/before/after)
+        // are stringified. Exact repeats still match (all args identical).
+        let interesting: [String] = ["query", "with", "person", "in", "chat_id", "date", "since", "before", "after", "limit", "guid"]
         var parts: [String] = []
         for key in interesting {
-            guard let v = args[key], let s = v.asString else { continue }
+            guard let v = args[key] else { continue }
+            let s: String
+            if let str = v.asString { s = str }
+            else if let i = v.asInt { s = String(i) }
+            else { continue }
             let clipped = s.count > 40 ? String(s.prefix(40)) + "…" : s
             parts.append("\(key)=\(clipped)")
         }
