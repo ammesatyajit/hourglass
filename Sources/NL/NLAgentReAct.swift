@@ -946,7 +946,15 @@ public extension NLAgent {
                 }
                 let hint = NLAgent.breadthHint(count: results.count, shown: shown)
                 let kwHint = results.isEmpty ? (Self.misplacedKeywordHint(for: query) ?? "") : ""
-                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)\(kwHint)"
+                // CAPPED-RESULT warning: `search` returns at most `limit` rows,
+                // so when it returns the full limit the count is a SAMPLE, not
+                // the total — and the model must not report it as a "how many"
+                // answer (observed: 38 reported as the total of ~1571). For an
+                // exact count it has to use countMatching.
+                let capHint = results.count >= limit
+                    ? "\n⚠ This hit the LIMIT (\(limit)) — \(results.count) is a SAMPLE, NOT the total; there are likely MANY more matches. NEVER report this as a 'how many' total — use countMatching for the exact count. To inspect specific messages, NARROW with more filters."
+                    : ""
+                let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)\(kwHint)\(capHint)"
                 return ToolObservation(
                     observation: obs,
                     summary: "\(results.count) match\(results.count == 1 ? "" : "es")",
