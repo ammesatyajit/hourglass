@@ -732,6 +732,7 @@ public extension NLAgent {
         var argInjections: [String] = []
         var unknownOps: [String] = []
         var badTypes: [String] = []
+        var badReactions: [String] = []
         var dateInChatOps: [String] = []
         var anyFutureDate = false
 
@@ -770,6 +771,19 @@ public extension NLAgent {
                         badTypes.append(String(tok))
                     }
                 }
+                // (3b) B5 — bounded-enum value check for `reactions:`. Same trap
+                // as type:message: `reactions:heart` looks valid (real prefix)
+                // but "heart" isn't a kind (the ❤️ reaction is `love`), so the
+                // token falls into free text → silent 0 ("reacted to 0 messages"
+                // when there are thousands). Validate via the real parser.
+                if prefix == TokenPrefix.reactions.rawValue {
+                    let value = String(tok[tok.index(after: colon)...])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if !value.isEmpty && !value.contains("|") && !value.contains("*") &&
+                        MessageSearch.ReactionFilter.parse(value) == nil {
+                        badReactions.append(String(tok))
+                    }
+                }
                 // (4) date/date-range jammed into a chat-scope operator.
                 // `in:`/`chat:` filter by CHAT NAME — a date there silently
                 // matches no chat (observed: `in:"2026-09-01..2026-12-31"` for
@@ -785,7 +799,7 @@ public extension NLAgent {
             }
         }
 
-        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !dateInChatOps.isEmpty else { return nil }
+        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !badReactions.isEmpty || !dateInChatOps.isEmpty else { return nil }
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
@@ -796,6 +810,9 @@ public extension NLAgent {
         }
         if !badTypes.isEmpty {
             msg += "Invalid type filter(s): \(badTypes.joined(separator: ", ")). `type:` accepts ONLY image|video|audio|sticker|link|file|text|attachment. For ALL messages (no content filter), OMIT type: entirely — there is no type:message. "
+        }
+        if !badReactions.isEmpty {
+            msg += "Invalid reaction filter(s): \(badReactions.joined(separator: ", ")). `reactions:` accepts a KIND — love, like, laugh, emphasize, question, dislike (the ❤️/heart reaction is `love`) — or a count comparator (e.g. >=3) or `any`. "
         }
         if !dateInChatOps.isEmpty {
             msg += "DATE in a chat-scope operator: \(dateInChatOps.joined(separator: ", ")). The \"query\" field is for KEYWORDS ONLY — a date is NEVER a keyword. DELETE the in:/chat:<date> token from \"query\" entirely and put the date ONLY in the JSON \"in\" arg. If you have no keyword, send query as \"\" (empty): {\"query\":\"\",\"in\":\"2025-09-01..2026-06-16\"}. Do NOT put the date in both places. "
