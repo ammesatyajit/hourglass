@@ -448,8 +448,36 @@ final class NLAgentReActTests: XCTestCase {
             now: now
         )
         XCTAssertNotNil(range)
-        XCTAssertEqual(range!.lowerBound, NLAgent.parseISODate("2026-01-01"))
-        XCTAssertEqual(range!.upperBound, NLAgent.parseISODate("2026-12-31"))
+        // Date-only bounds anchor to the LOCAL calendar day (Calendar.current),
+        // not UTC: low → 00:00 Jan 1, high → 23:59:59 Dec 31. This matches the
+        // `on:`/`before:`/`after:` operators and the UI.
+        let cal = Calendar.current
+        let jan1 = cal.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let dec31Start = cal.date(from: DateComponents(year: 2026, month: 12, day: 31))!
+        let dec31End = cal.date(byAdding: .day, value: 1, to: dec31Start)!.addingTimeInterval(-1)
+        XCTAssertEqual(range!.lowerBound, jan1)
+        XCTAssertEqual(range!.upperBound, dec31End)
+    }
+
+    /// A bare single date resolves to the whole LOCAL calendar day — the core
+    /// of the "make timezone current not UTC" fix. "on june 14" must mean the
+    /// user's June 14 (Calendar.current), not the UTC June 14 that
+    /// `parseISODate` would anchor a date-only string to.
+    func testResolveDateArg_singleDate_anchorsToLocalDay() {
+        let now = Date()
+        let range = NLAgent.resolveDateArg(["in": .string("2026-06-14")], now: now)
+        XCTAssertNotNil(range)
+        let cal = Calendar.current
+        let start = cal.date(from: DateComponents(year: 2026, month: 6, day: 14))!
+        let end = cal.date(byAdding: .day, value: 1, to: start)!.addingTimeInterval(-1)
+        XCTAssertEqual(range!.lowerBound, start)
+        XCTAssertEqual(range!.upperBound, end)
+        // On any non-UTC machine the local anchor differs from the UTC anchor
+        // that parseISODate produces for a date-only string — assert we moved
+        // off UTC.
+        if cal.timeZone.secondsFromGMT(for: start) != 0 {
+            XCTAssertNotEqual(range!.lowerBound, NLAgent.parseISODate("2026-06-14"))
+        }
     }
 
     func testResolveDateArg_nullOrAllTime_returnsNil() {

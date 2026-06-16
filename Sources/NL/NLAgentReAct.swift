@@ -1561,35 +1561,76 @@ public extension NLAgent {
             return window.toDateRange(now: now)
         }
         // Explicit range: "YYYY-MM-DD..YYYY-MM-DD" (optionally with times).
+        // Date-only bounds anchor to the LOCAL calendar day (low → 00:00,
+        // high → 23:59:59) so the window matches the `on:`/`before:`/`after:`
+        // operators (Calendar.current) and the UI. INCLUSIVE end (B2): a
+        // date-only upper resolved to its day's 00:00 would silently DROP the
+        // whole final day — "2026-05-01..2026-05-31" once excluded all of
+        // May 31. `resolveBound(asHigh:)` extends a date-only upper to the
+        // last second of that local day; a timestamped bound ("...T14:00:00Z")
+        // carries its own zone and passes straight through.
         let parts = trimmed.components(separatedBy: "..")
         if parts.count == 2 {
             let loStr = parts[0].trimmingCharacters(in: .whitespaces)
             let hiStr = parts[1].trimmingCharacters(in: .whitespaces)
-            if let lo = NLAgent.parseISODate(loStr),
-               var hi = NLAgent.parseISODate(hiStr),
+            if let lo = resolveBound(loStr, asHigh: false),
+               let hi = resolveBound(hiStr, asHigh: true),
                lo <= hi {
-                // INCLUSIVE end (B2): a DATE-ONLY upper bound ("2026-05-31")
-                // parses to that day's 00:00:00, so the closed range would
-                // silently DROP the entire final day — "2026-05-01..2026-05-31"
-                // excluded all of May 31 (here, 175 sent messages). Extend a
-                // date-only upper to the last second of that day. A timestamped
-                // upper ("...T14:00:00Z") is left exactly as the model meant it.
-                let hiIsDateOnly = hiStr.count == 10 && !hiStr.contains("T") && !hiStr.contains(":")
-                if hiIsDateOnly {
-                    hi = hi.addingTimeInterval(24 * 3600 - 1)
-                }
                 return lo...hi
             }
         }
-        // Bare SINGLE date "YYYY-MM-DD" → that whole calendar day [00:00..23:59:59].
-        // Without this, a single date in the `in` arg fell through to nil (NO date
-        // filter) → counted ALL messages (observed B2 bug: in:"2026-06-14" →
-        // 544,105 instead of ~371 for that day). "on june 14" naturally maps here.
+        // Bare SINGLE date "YYYY-MM-DD" → that whole LOCAL calendar day
+        // [00:00..23:59:59]. Anchored at Calendar.current (not UTC) so
+        // "on june 14" means the user's June 14, matching the operators/UI.
+        // Without this path a single date fell through to nil (NO date filter)
+        // → counted ALL messages (observed B2 bug: in:"2026-06-14" → 544,105
+        // instead of ~371 for that day).
         if trimmed.count == 10, !trimmed.contains("T"), !trimmed.contains(":"),
-           let d = NLAgent.parseISODate(trimmed) {
-            return d...d.addingTimeInterval(24 * 3600 - 1)
+           let lo = localDayStart(trimmed), let hi = localDayEnd(trimmed) {
+            return lo...hi
         }
         return nil
+    }
+
+    /// Start (00:00:00) of the LOCAL calendar day named by a date-only
+    /// "YYYY-MM-DD" string. Uses `Calendar.current`, so the result tracks the
+    /// machine's timezone — the same anchor the `on:`/`before:`/`after:`
+    /// operators and the UI use. Returns nil if the string isn't a bare date.
+    static func localDayStart(_ dateOnly: String) -> Date? {
+        let parts = dateOnly.split(separator: "-")
+        guard parts.count == 3,
+              let y = Int(parts[0]), let mo = Int(parts[1]), let day = Int(parts[2]) else {
+            return nil
+        }
+        var comps = DateComponents()
+        comps.year = y
+        comps.month = mo
+        comps.day = day
+        return Calendar.current.date(from: comps)
+    }
+
+    /// Last instant (00:00 of the NEXT local day, minus one second) of the
+    /// LOCAL calendar day named by a date-only string. DST-safe: derived by
+    /// adding one calendar day then subtracting a second, so a 23- or 25-hour
+    /// day resolves correctly instead of a naive +86399s.
+    static func localDayEnd(_ dateOnly: String) -> Date? {
+        guard let start = localDayStart(dateOnly),
+              let next = Calendar.current.date(byAdding: .day, value: 1, to: start) else {
+            return nil
+        }
+        return next.addingTimeInterval(-1)
+    }
+
+    /// Resolve one boundary of a date range. A date-only string anchors to the
+    /// LOCAL calendar-day boundary — start for a low bound, end-of-day for a
+    /// high bound. A timestamped string carries its own zone and is parsed
+    /// verbatim by `parseISODate`.
+    private static func resolveBound(_ s: String, asHigh: Bool) -> Date? {
+        let isDateOnly = s.count == 10 && !s.contains("T") && !s.contains(":")
+        if isDateOnly {
+            return asHigh ? localDayEnd(s) : localDayStart(s)
+        }
+        return NLAgent.parseISODate(s)
     }
 
     /// Parse a date arg from the LLM. Accepts BOTH:
