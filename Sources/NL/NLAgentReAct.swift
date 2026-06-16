@@ -422,8 +422,6 @@ public extension NLAgent {
                     ))
                     continue loop
                 }
-                executedSignatures.insert(signature)
-
                 trace.append(NLTraceStep(
                     phase: .searching,
                     label: "Tool: \(call.tool) (\(Self.summarizeArgs(call.args)))",
@@ -439,6 +437,15 @@ public extension NLAgent {
                     lastCandidates: &lastCandidates,
                     lastContacts: &lastContacts
                 )
+                // Record the signature for duplicate detection ONLY when the
+                // call actually SUCCEEDED. A REJECTED call (failed: true — a
+                // guard corrective, not a real result) means the model is about
+                // to RETRY with a fix; recording it would falsely flag the
+                // corrected retry as a duplicate and kill recovery (observed:
+                // with:"gym" rejected → the corrected bare "gym protein" retry
+                // was blocked as a dup → forced give-up). The read-cap still
+                // bounds the loop, so this can't run away.
+                if !observation.failed { executedSignatures.insert(signature) }
                 trace[trace.count - 1] = NLTraceStep(
                     id: trace[trace.count - 1].id,
                     phase: .searching,
@@ -716,6 +723,26 @@ public extension NLAgent {
         return msg
     }
 
+    /// `with:` values in `query` that match NO known contact name → the model
+    /// jammed a search KEYWORD into the person operator (observed: `with:"gym"
+    /// protein` → 0 because no contact is "gym"). This catches the case the
+    /// no-free-text guard misses (`with:"gym" protein` HAS free text). Match is
+    /// case-insensitive, both directions ("Beck"⊂"Beck Peterson"). Requires the
+    /// contact list, so it runs only on a 0-result search (caller awaits it).
+    static func withValuesNotContacts(in query: String, contactNames: [String]) -> [String] {
+        let names = contactNames.map { $0.lowercased() }
+        var unmatched: [String] = []
+        for tok in tokenizeQuery(query) where tok.lowercased().hasPrefix(TokenPrefix.with.rawValue) {
+            let value = String(tok.dropFirst(TokenPrefix.with.rawValue.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"")).lowercased()
+            guard !value.isEmpty else { continue }
+            if !names.contains(where: { $0.contains(value) || value.contains($0) }) {
+                unmatched.append(String(tok))
+            }
+        }
+        return unmatched
+    }
+
     /// If `s` is a date ("2026-09-01") or date-range ("2026-09-01..2026-12-31"),
     /// return its START date string; else nil. Used to catch a date misplaced
     /// into a chat-scope (`in:`/`chat:`) operator.
@@ -898,6 +925,19 @@ public extension NLAgent {
                 let preview = results.prefix(shown).enumerated().map { (i, r) in
                     NLAgent.formatResultLine(index: i, result: r)
                 }.joined(separator: "\n")
+                // 0 results + a with:"X" where X matches no contact → the model
+                // jammed a keyword into the person operator (catches the case
+                // the no-free-text misplacedKeywordHint misses). Hard-correct.
+                if results.isEmpty {
+                    let badWith = Self.withValuesNotContacts(in: query, contactNames: await tools.availableContactNames())
+                    if !badWith.isEmpty {
+                        return ToolObservation(
+                            observation: "INVALID — \(badWith.joined(separator: ", ")) matched NO contact, so with: scoped to a person who doesn't exist → 0. `with:` is a PERSON filter. If that value is a search WORD (not a person), write it as BARE text — e.g. `from:me gym protein`, NOT `with:\"gym\" protein`. Retry.",
+                            summary: "with: not a contact",
+                            failed: true
+                        )
+                    }
+                }
                 let hint = NLAgent.breadthHint(count: results.count, shown: shown)
                 let kwHint = results.isEmpty ? (Self.misplacedKeywordHint(for: query) ?? "") : ""
                 let obs = "Found \(results.count) match\(results.count == 1 ? "" : "es"). Showing \(shown) with full bodies:\n\(preview)\(hint)\(kwHint)"
