@@ -745,8 +745,19 @@ public extension NLAgent {
         var toSelfOps: [String] = []
         var dateInChatOps: [String] = []
         var anyFutureDate = false
+        var hasWordOr = false
+        var sawOperator = false
 
         for tok in tokens {
+            // The literal word "or" is NOT a boolean here (only `|` is OR — the
+            // word is free text). The model writes `type:image or type:video`
+            // expecting OR → "or" becomes a required free-text term → wrong
+            // count (observed: 19 instead of 4934). Flag it ONLY when real
+            // operators are present, so a free-text phrase like "in that or not"
+            // (no operators — the venkat regression) is never touched.
+            let lowerTok = tok.lowercased()
+            if lowerTok == "or" { hasWordOr = true }
+            if validPrefixes.contains(where: { lowerTok.hasPrefix($0) }) { sawOperator = true }
             // (1) arg-injection: a bare letter/underscore key immediately
             // followed by '='. `reactions:>=3` is safe — its key segment
             // contains ':' and '>' so it fails the letters-only test.
@@ -821,7 +832,7 @@ public extension NLAgent {
             }
         }
 
-        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !badReactions.isEmpty || !toSelfOps.isEmpty || !dateInChatOps.isEmpty else { return nil }
+        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !badReactions.isEmpty || !toSelfOps.isEmpty || !dateInChatOps.isEmpty || (hasWordOr && sawOperator) else { return nil }
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
@@ -845,6 +856,9 @@ public extension NLAgent {
                 let f = ISO8601DateFormatter(); f.formatOptions = [.withFullDate]
                 msg += "Also: today is \(f.string(from: now)), so that date is in the FUTURE — for a 'since <month>' query you mean the most-recent PAST occurrence (use last year). "
             }
+        }
+        if hasWordOr && sawOperator {
+            msg += "The word \"or\" is a literal SEARCH WORD here, NOT a boolean. To OR multiple FILTERS (type:/reactions:/etc.), just list them SPACE-separated — e.g. `type:image type:video` = images OR videos. Do NOT put | between operators (that fails). Use | ONLY to OR free-text WORDS (e.g. `cat|dog`). Remove the word \"or\". "
         }
         msg += "Operators valid INSIDE \"query\": \(validList), plus | for OR, + for AND, and *substr* for substring. Retry with a corrected query."
         return msg
