@@ -694,7 +694,7 @@ public extension NLAgent {
             }
         }
         guard hasChatFilter && !hasFreeText else { return nil }
-        return "\nNOTE: your query has NO search keyword — every token is a filter, and in:/chat: match CHAT NAMES, not message content. To search for a WORD, write it as bare text (e.g. `from:me gym`), NOT `in:\"gym\"`."
+        return "\nNOTE: your query has NO search keyword — every token is a filter, and in:/chat: match CHAT NAMES, not message content. To search for a word, write it as BARE text — e.g. `from:me <thatWord>` (replace the placeholder with your actual word), NOT `in:\"<thatWord>\"`."
     }
 
     /// If `s` is a date ("2026-09-01") or date-range ("2026-09-01..2026-12-31"),
@@ -779,7 +779,7 @@ public extension NLAgent {
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
-            msg += "These are ARGUMENTS stuffed into the query text: \(argInjections.joined(separator: ", ")). Move them out of \"query\" into the JSON args — e.g. {\"query\":\"protein|shake\",\"in\":\"all_time\",\"limit\":40}. "
+            msg += "These are ARGUMENTS stuffed into the query text: \(argInjections.joined(separator: ", ")). Move them out of \"query\" into the JSON args — shape: {\"query\":\"<your search words>\",\"in\":\"all_time\",\"limit\":40}. (The angle-bracket part is a PLACEHOLDER — replace it with your own keywords; do NOT search for it literally.) "
         }
         if !unknownOps.isEmpty {
             msg += "Unknown operator(s): \(unknownOps.joined(separator: ", ")). "
