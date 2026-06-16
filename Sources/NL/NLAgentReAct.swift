@@ -733,6 +733,7 @@ public extension NLAgent {
         var unknownOps: [String] = []
         var badTypes: [String] = []
         var badReactions: [String] = []
+        var toSelfOps: [String] = []
         var dateInChatOps: [String] = []
         var anyFutureDate = false
 
@@ -784,6 +785,18 @@ public extension NLAgent {
                         badReactions.append(String(tok))
                     }
                 }
+                // (3c) `to:me` footgun. `to:X` = messages YOU SENT to X, so
+                // `to:me` is contradictory with from:<someone-else> → 0 (observed:
+                // "photos Beck sent me" → `from:"Beck" to:me type:image` → 0,
+                // when from:"Beck" type:image alone is 313). The model means
+                // "received BY me", which is just from:<person> in a 1:1.
+                if prefix == TokenPrefix.to.rawValue {
+                    let value = String(tok[tok.index(after: colon)...])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"")).lowercased()
+                    if value == "me" || value == "self" || value == "myself" {
+                        toSelfOps.append(String(tok))
+                    }
+                }
                 // (4) date/date-range jammed into a chat-scope operator.
                 // `in:`/`chat:` filter by CHAT NAME — a date there silently
                 // matches no chat (observed: `in:"2026-09-01..2026-12-31"` for
@@ -799,7 +812,7 @@ public extension NLAgent {
             }
         }
 
-        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !badReactions.isEmpty || !dateInChatOps.isEmpty else { return nil }
+        guard !argInjections.isEmpty || !unknownOps.isEmpty || !badTypes.isEmpty || !badReactions.isEmpty || !toSelfOps.isEmpty || !dateInChatOps.isEmpty else { return nil }
 
         var msg = "INVALID QUERY — not run (it would fail silently). "
         if !argInjections.isEmpty {
@@ -813,6 +826,9 @@ public extension NLAgent {
         }
         if !badReactions.isEmpty {
             msg += "Invalid reaction filter(s): \(badReactions.joined(separator: ", ")). `reactions:` accepts a KIND — love, like, laugh, emphasize, question, dislike (the ❤️/heart reaction is `love`) — or a count comparator (e.g. >=3) or `any`. "
+        }
+        if !toSelfOps.isEmpty {
+            msg += "`\(toSelfOps.joined(separator: ", "))` does NOT mean 'received by you'. `to:X` filters messages YOU SENT to X — so `to:me` is contradictory with from:<someone else> and matches the wrong messages. For 'messages <person> sent you', use `from:\"<person>\"` ALONE (drop the to:me). "
         }
         if !dateInChatOps.isEmpty {
             msg += "DATE in a chat-scope operator: \(dateInChatOps.joined(separator: ", ")). The \"query\" field is for KEYWORDS ONLY — a date is NEVER a keyword. DELETE the in:/chat:<date> token from \"query\" entirely and put the date ONLY in the JSON \"in\" arg. If you have no keyword, send query as \"\" (empty): {\"query\":\"\",\"in\":\"2025-09-01..2026-06-16\"}. Do NOT put the date in both places. "
