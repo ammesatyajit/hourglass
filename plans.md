@@ -4730,3 +4730,6 @@ DISK INCIDENT: data volume hit 99% full → ENOSPC mid-edit. Freed ~5GB by remov
 
 ## Agent-opt loop iteration (2026-06-16 #2): plansInWindow VERIFIED
 Tested "what plans did I commit to this week" on the live 4B agent. It now calls plansInWindow (valid `in:last_7d`), gets 63 plan-messages across all chats in one observation, and names 5 distinct plans with citations (vs the old "stopped at 1 commitment"). The plansInWindow tool — built earlier but never live-verified — is confirmed working. No new optimization this fire (PASS).
+
+## Agent-opt loop iteration (2026-06-16 #3): photo count — rolling vs calendar month
+Tested "how many photos did I send last month": agent → countMatching `from:me type:image last:30d` = 169. Ground truth (calendar May 2026) = 154. Right tool/filters; the gap is "last month" resolving to rolling-30d not calendar May. NEAR-PASS. B2 calendar-month resolution noted but DEFERRED (disk 99% full = rebuild risk; ambiguous phrase). No code change this fire.
