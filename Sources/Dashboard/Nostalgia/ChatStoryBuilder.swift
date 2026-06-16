@@ -28,16 +28,7 @@ public enum ChatStoryBuilder {
         public var minMessages: Int = 200
         /// Sessionization gap: a silence longer than this splits one "sitting"
         /// from the next. 45 min, matching the `/tmp/convo` prototype.
-        /// Max gap between consecutive messages for them to count as the same
-        /// SITTING. 10 minutes (was 45): a sitting is an ACTIVE exchange —
-        /// with 45 min, four texts spaced 30 minutes apart chained into a
-        /// "2-hour conversation" that never happened.
-        public var sessionGap: TimeInterval = 10 * 60
-        /// A "sitting" must be a CONVERSATION, not a monologue: the busiest
-        /// sender may own at most this share of the session (and ≥2 distinct
-        /// senders are required). One person rapid-firing 200 messages into a
-        /// void doesn't count.
-        public var sessionMaxSenderShare: Double = 0.9
+        public var sessionGap: TimeInterval = 45 * 60
         /// A peak-reaction message must clear this many reactions to surface (a
         /// single stray tapback isn't "the" reacted moment).
         public var minPeakReactions: Int = 2
@@ -263,9 +254,7 @@ public enum ChatStoryBuilder {
         _ msgs: [RawMessage],
         config: Config
     ) -> NotableMoment? {
-        guard let best = longestSession(msgs, gap: config.sessionGap,
-                                        maxSenderShare: config.sessionMaxSenderShare),
-              best.count >= 2 else {
+        guard let best = longestSession(msgs, gap: config.sessionGap), best.count >= 2 else {
             return nil
         }
         let minutes = Int((best.end.timeIntervalSince(best.start)) / 60)
@@ -282,8 +271,7 @@ public enum ChatStoryBuilder {
     /// (count, start, end), or nil for empty input. Exposed for unit tests.
     public static func longestSession(
         _ msgs: [RawMessage],
-        gap: TimeInterval,
-        maxSenderShare: Double = 1.0
+        gap: TimeInterval
     ) -> (count: Int, start: Date, end: Date)? {
         guard !msgs.isEmpty else { return nil }
         // Defensive sort — callers pass sorted, tests may not.
@@ -299,30 +287,14 @@ public enum ChatStoryBuilder {
                 j += 1
             }
             let count = j - i + 1
-            if count > bestCount, qualifies(ms[i...j], maxSenderShare: maxSenderShare) {
+            if count > bestCount {
                 bestCount = count
                 bestStart = ms[i].date
                 bestEnd = ms[j].date
             }
             i = j + 1
         }
-        return bestCount > 0 ? (bestCount, bestStart, bestEnd) : nil
-    }
-
-    /// A session counts only when it's a CONVERSATION: at least two distinct
-    /// senders, none owning more than `maxSenderShare` of the messages.
-    /// `maxSenderShare >= 1` disables the check (pure gap behavior).
-    private static func qualifies(
-        _ session: ArraySlice<RawMessage>,
-        maxSenderShare: Double
-    ) -> Bool {
-        guard maxSenderShare < 1.0 else { return true }
-        var counts: [String: Int] = [:]
-        for m in session {
-            counts[m.isFromMe ? "You" : m.senderName, default: 0] += 1
-        }
-        guard counts.count >= 2, let top = counts.values.max() else { return false }
-        return Double(top) / Double(session.count) <= maxSenderShare
+        return (bestCount, bestStart, bestEnd)
     }
 
     /// The calendar day with the most messages. Buckets by local day; the
