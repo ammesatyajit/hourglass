@@ -674,27 +674,37 @@ public extension NLAgent {
         return tokens
     }
 
-    /// When a search returns ZERO and the query is all-filters-with-an-
-    /// `in:`/`chat:`-token-but-NO-free-text, the model almost certainly jammed
-    /// a search KEYWORD into the chat-name operator (observed: `in:"gym"` for
-    /// "how many times did I mention gym" → 0, since no chat is named gym).
-    /// Returns targeted guidance so it moves the word to bare free text instead
-    /// of flailing. Precise by construction: a legit filter-only query like
-    /// `from:me type:image` has NO in:/chat: token, so it never fires.
+    /// When a search returns ZERO and the query is all-filters-with-NO-free-text
+    /// but has an `in:`/`chat:` (chat-name) or `with:` (person) token, the model
+    /// likely jammed a search KEYWORD into a scope operator (observed: `in:"gym"`
+    /// AND `with:gym|gymnastics|…` for "how many times did I mention gym" → 0,
+    /// since no chat/person is named gym). Returns CONDITIONAL guidance so it
+    /// moves the word to bare free text — while letting a legit scope (`with:"Beck"`
+    /// with 0 in-window) be treated as a valid "none found". `from:`/`to:` are
+    /// excluded: `from:me`/`to:me` are common legit filters, not the footgun.
+    /// Precise by construction: `from:me type:image` has no in:/chat:/with: token.
     static func misplacedKeywordHint(for query: String) -> String? {
         let validPrefixes = TokenPrefix.allCases.map { $0.rawValue }
         var hasChatFilter = false
+        var hasPersonFilter = false
         var hasFreeText = false
         for tok in tokenizeQuery(query) {
             let lower = tok.lowercased()
             if let p = validPrefixes.first(where: { lower.hasPrefix($0) }) {
-                if p == TokenPrefix.in.rawValue || p == TokenPrefix.chat.rawValue { hasChatFilter = true }
+                if p == TokenPrefix.in.rawValue || p == TokenPrefix.chat.rawValue {
+                    hasChatFilter = true
+                } else if p == TokenPrefix.with.rawValue {
+                    hasPersonFilter = true
+                }
             } else if tok != "|" && tok != "+" && !tok.isEmpty {
                 hasFreeText = true
             }
         }
-        guard hasChatFilter && !hasFreeText else { return nil }
-        return "\nNOTE: your query has NO search keyword — every token is a filter, and in:/chat: match CHAT NAMES, not message content. To search for a word, write it as BARE text — e.g. `from:me <thatWord>` (replace the placeholder with your actual word), NOT `in:\"<thatWord>\"`."
+        guard (hasChatFilter || hasPersonFilter) && !hasFreeText else { return nil }
+        var what: [String] = []
+        if hasChatFilter { what.append("in:/chat: = CHAT NAME") }
+        if hasPersonFilter { what.append("with: = PERSON") }
+        return "\nNOTE: your query has NO free-text keyword — every token is a FILTER (\(what.joined(separator: ", "))), and none of those match message CONTENT. If you're scoping to a real chat/person and just got 0 in this window, that is a valid 'none found' — answer accordingly. But if you meant to SEARCH for a word, write it as BARE text (the word alone, NOT wrapped in with:/in:/chat:) and retry."
     }
 
     /// If `s` is a date ("2026-09-01") or date-range ("2026-09-01..2026-12-31"),
