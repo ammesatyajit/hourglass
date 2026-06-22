@@ -346,11 +346,33 @@ public enum DashboardLoader {
     /// "People you text the most" — 1:1 chats only, sent + received pooled.
     /// Merges multiple handles per contact via the resolved name (same idea
     /// as `top_contacts.py`).
+    /// The per-person bucket identity for a raw handle string, matching how
+    /// `loadTopContacts` collapses handles into one-person buckets (resolved
+    /// contacts merge across their handles; unknown handles stay per-handle).
+    /// Extracted so a caller that needs to pre-compute a key set for a filter
+    /// — e.g. "top contacts restricted to a chat's members" — stays in
+    /// lockstep with the loader's bucketing instead of duplicating (and
+    /// drifting from) the key logic.
+    static func contactIdentity(
+        forHandle raw: String,
+        contacts: ResolvedContacts
+    ) -> (key: String, displayName: String, avatarData: Data?) {
+        let handle = Handle(raw: raw)
+        if let resolved = contacts.byHandle[handle], !resolved.displayName.isEmpty {
+            return ("name:\(resolved.displayName)", resolved.displayName, resolved.avatarData)
+        }
+        return ("handle:\(handle.normalized)", raw, nil)
+    }
+
     static func loadTopContacts(
         db: Database,
         dateRange: ClosedRange<Date>?,
         contacts: ResolvedContacts,
-        limit: Int = 50
+        limit: Int = 50,
+        // When non-nil, keep only buckets whose key is in this set. Used to
+        // scope the ranking to a chat's members ("of the people in <group>,
+        // who you text the most"). Keys come from `contactIdentity`.
+        restrictToContactKeys: Set<String>? = nil
     ) throws -> [DashboardStats.ContactStat] {
 
         let (dateSQL, dateArgs) = dateClause(dateRange)
@@ -416,20 +438,7 @@ public enum DashboardLoader {
             let received: Int = row["received"] ?? 0
             let total: Int = row["total"] ?? 0
 
-            let handle = Handle(raw: raw)
-            let resolvedContact = contacts.byHandle[handle]
-            let key: String
-            let displayName: String
-            let avatarData: Data?
-            if let resolved = resolvedContact, !resolved.displayName.isEmpty {
-                key = "name:\(resolved.displayName)"
-                displayName = resolved.displayName
-                avatarData = resolved.avatarData
-            } else {
-                key = "handle:\(handle.normalized)"
-                displayName = raw
-                avatarData = nil
-            }
+            let (key, displayName, avatarData) = contactIdentity(forHandle: raw, contacts: contacts)
 
             var bucket = merged[key] ?? Bucket(name: displayName)
             bucket.sent += sent
@@ -443,6 +452,12 @@ public enum DashboardLoader {
                 bucket.avatarData = avatarData
             }
             merged[key] = bucket
+        }
+
+        // Scope to a chat's members when requested. Done after bucketing so
+        // multi-handle contacts are already merged under one key.
+        if let restrictToContactKeys {
+            merged = merged.filter { restrictToContactKeys.contains($0.key) }
         }
 
         let ranked = merged

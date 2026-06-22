@@ -1156,16 +1156,33 @@ public extension NLAgent {
 
         case "topContacts":
             let limit = call.args["limit"]?.asInt ?? 5
+            // Optional chat scope: "of the people in <chat>, who you text the
+            // most individually". Empty/nil → the global ranking.
+            let chatScope = call.args["chat"]?.asString?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let scoped = !(chatScope ?? "").isEmpty
             do {
-                let stats = try await tools.topContacts(in: dateRange, limit: limit)
+                let stats = try await tools.topContacts(
+                    inChatNamed: chatScope, in: dateRange, limit: limit
+                )
                 lastContacts = stats
+                // Scoped + empty means no chat matched that name — tell the
+                // model so it reports the miss instead of inventing an answer.
+                if scoped && stats.isEmpty {
+                    return ToolObservation(
+                        observation: "No chat found matching \"\(chatScope!)\". Do NOT fall back to a global ranking — tell the user you couldn't find that chat.",
+                        summary: "chat not found",
+                        failed: false
+                    )
+                }
                 let preview = stats.prefix(min(limit, 10)).enumerated().map { (i, s) in
                     "  [\(i)] \(s.displayName): \(s.total) total (\(s.sent) sent, \(s.received) received)"
                 }.joined(separator: "\n")
-                let obs = "Top \(stats.count) contact\(stats.count == 1 ? "" : "s"):\n\(preview)\n\(Self.answerNowHint)"
+                let scopeLabel = scoped ? " in \"\(chatScope!)\" (ranked by your 1:1 volume with each member)" : ""
+                let obs = "Top \(stats.count) contact\(stats.count == 1 ? "" : "s")\(scopeLabel):\n\(preview)\n\(Self.answerNowHint)"
                 return ToolObservation(
                     observation: obs,
-                    summary: "\(stats.count) contacts",
+                    summary: scoped ? "\(stats.count) contacts in chat" : "\(stats.count) contacts",
                     failed: false
                 )
             } catch {
@@ -1358,8 +1375,9 @@ public extension NLAgent {
         5) {"tool":"firstMatching","args":{"query":"<string>","in":"<date-range or null>"}}
            Earliest match in a window. Use for "when did X first happen".
 
-        6) {"tool":"topContacts","args":{"in":"<date-range or null>","limit":<int>}}
+        6) {"tool":"topContacts","args":{"in":"<date-range or null>","limit":<int>,"chat":"<chat name or null>"}}
            People you texted the most. Returns name + sent + received + total.
+           Pass "chat" to scope to the MEMBERS of a named group chat — "who did I text the most in <group>", "most active person in the <name> chat". The result ranks that chat's members by your 1:1 volume with each. Leave "chat" null/absent for the global ranking.
 
         7) {"tool":"topGroups","args":{"in":"<date-range or null>","limit":<int>}}
            Group chats you texted the most.
@@ -1405,6 +1423,11 @@ public extension NLAgent {
         Turn 1: {"tool":"topContacts","args":{"in":"2026-01-01..2026-12-31","limit":5}}
         Observation: Top 5 contacts: [0] Sarah: 1240 total ...
         Turn 2: {"answer":"You texted Sarah the most in 2026 — 1240 messages total (623 sent, 617 received), well ahead of everyone else.","hero_index":null,"evidence_indices":[]}
+
+        Q: who did I text the most in the "Lost Causes" group individually
+        Turn 1: {"tool":"topContacts","args":{"in":"all_time","limit":5,"chat":"Lost Causes"}}
+        Observation: Top 4 contacts in "Lost Causes" (ranked by your 1:1 volume with each member): [0] Noah: 880 total ...
+        Turn 2: {"answer":"Of the people in the \\"Lost Causes\\" group, you text Noah the most one-on-one — 880 messages total (430 sent, 450 received).","hero_index":null,"evidence_indices":[]}
 
         Q: what did Mom say about Thanksgiving plans  (BROADEN example)
         Turn 1: {"tool":"search","args":{"query":"with:\\"Mom\\" thanksgiving","in":"all_time","limit":40}}

@@ -147,6 +147,47 @@ final class DashboardLoaderTests: XCTestCase {
                        "Email handle should NOT appear separately: it's the same chat's partner as handle 1.")
     }
 
+    /// `restrictToContactKeys` keeps only the buckets whose key is in the
+    /// set — the mechanism behind "top contacts scoped to a chat's members".
+    /// All-time window so every fixture contact is present to filter from.
+    func testTopContactsRestrictedToMemberKeys() throws {
+        let db = try openFixture()
+        let contacts = emptyContacts
+        try db.dbQueue.read { database in
+            let all = try DashboardLoader.loadTopContacts(
+                db: database, dateRange: nil, contacts: contacts, limit: 50
+            )
+            XCTAssertGreaterThanOrEqual(all.count, 2,
+                "Fixture should have ≥2 one-to-one contacts to filter from.")
+
+            // Restrict to ONE existing contact's key → exactly that contact,
+            // with its counts unchanged from the unrestricted ranking.
+            let keep = all[0]
+            let restricted = try DashboardLoader.loadTopContacts(
+                db: database, dateRange: nil, contacts: contacts, limit: 50,
+                restrictToContactKeys: [keep.key]
+            )
+            XCTAssertEqual(restricted.count, 1, "Restricting to one key yields one contact.")
+            XCTAssertEqual(restricted.first?.key, keep.key)
+            XCTAssertEqual(restricted.first?.total, keep.total,
+                "Restricted entry keeps the same counts as the unrestricted ranking.")
+
+            // Empty set → empty (no chat matched / no members resolved).
+            let none = try DashboardLoader.loadTopContacts(
+                db: database, dateRange: nil, contacts: contacts, limit: 50,
+                restrictToContactKeys: []
+            )
+            XCTAssertTrue(none.isEmpty, "An empty restriction set yields no contacts.")
+
+            // Unknown key → empty.
+            let bogus = try DashboardLoader.loadTopContacts(
+                db: database, dateRange: nil, contacts: contacts, limit: 50,
+                restrictToContactKeys: ["name:Nobody At All"]
+            )
+            XCTAssertTrue(bogus.isEmpty, "A non-matching restriction set yields no contacts.")
+        }
+    }
+
     /// In the all-time window, totals should be higher than 30-day for
     /// the same contact — we've got older traffic in the fixture too.
     func testTopContactsAllTimeAccumulatesHistory() throws {

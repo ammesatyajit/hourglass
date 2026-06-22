@@ -109,6 +109,19 @@ public protocol NLAgentTools: Sendable {
         limit: Int
     ) async throws -> [DashboardStats.ContactStat]
 
+    /// `topContacts` scoped to the members of a specific chat (matched by
+    /// display name). `chatName == nil`/empty is identical to the unfiltered
+    /// `topContacts`. Because `topContacts` counts 1:1 chats, this ranks the
+    /// named chat's members by your one-on-one volume with each — i.e. "of
+    /// the people in <group>, who you text the most individually". A default
+    /// implementation (ignores the scope) is provided for lightweight
+    /// conformers, so only the live tools need to implement membership.
+    func topContacts(
+        inChatNamed chatName: String?,
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [DashboardStats.ContactStat]
+
     /// "Group chats you text the most." Mirrors `topContacts` but ranks
     /// group chats (style 43) by `sentByYou` desc.
     func topGroups(
@@ -273,6 +286,11 @@ public extension NLAgentTools {
 
     func availableContactNames() async -> [String] { [] }
     func topContacts(in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [DashboardStats.ContactStat] { [] }
+    // Default: ignore the chat scope. Conformers that don't model chat
+    // membership (mocks, lightweight tools) fall back to the global ranking.
+    func topContacts(inChatNamed chatName: String?, in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [DashboardStats.ContactStat] {
+        try await topContacts(in: dateRange, limit: limit)
+    }
     func topGroups(in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [DashboardStats.GroupStat] { [] }
     func overviewStats(in dateRange: ClosedRange<Date>?) async throws -> DashboardStats.OverviewCounters {
         DashboardStats.OverviewCounters(total: 0, sent: 0, received: 0, chats: 0, oldest: nil, newest: nil)
@@ -547,6 +565,65 @@ public struct MessageSearchTools: NLAgentTools {
                 )
             }
         }.value
+    }
+
+    public func topContacts(
+        inChatNamed chatName: String?,
+        in dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) async throws -> [DashboardStats.ContactStat] {
+        let name = chatName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !name.isEmpty else {
+            // No scope → identical to the global ranking.
+            return try await topContacts(in: dateRange, limit: limit)
+        }
+        let contacts = instr.contacts
+        let chatDB = self.chatDB
+        return try await Task.detached(priority: .userInitiated) {
+            try chatDB.dbQueue.read { db in
+                // Resolve the chat's participant handles → the same bucket
+                // keys loadTopContacts groups by, then restrict the ranking to
+                // those members. Empty (no chat matched that name) → empty
+                // result, so the agent reports "couldn't find that chat"
+                // instead of silently falling back to a global answer.
+                let memberKeys = try Self.chatMemberContactKeys(
+                    db: db, chatNameLike: name, contacts: contacts
+                )
+                guard !memberKeys.isEmpty else { return [] }
+                return try DashboardLoader.loadTopContacts(
+                    db: db,
+                    dateRange: dateRange,
+                    contacts: contacts,
+                    limit: max(1, limit),
+                    restrictToContactKeys: memberKeys
+                )
+            }
+        }.value
+    }
+
+    /// The set of per-person bucket keys for the members of the chat(s) whose
+    /// display name contains `name` (case-insensitive). Keys are produced by
+    /// `DashboardLoader.contactIdentity` so they line up with the loader's
+    /// bucketing. Union across every matching chat.
+    private static func chatMemberContactKeys(
+        db: Database,
+        chatNameLike name: String,
+        contacts: ResolvedContacts
+    ) throws -> Set<String> {
+        let sql = """
+            SELECT DISTINCT h.id AS handle
+            FROM chat ch
+            JOIN chat_handle_join chj ON chj.chat_id = ch.ROWID
+            JOIN handle h ON h.ROWID = chj.handle_id
+            WHERE ch.display_name LIKE ? COLLATE NOCASE
+            """
+        let rows = try Row.fetchAll(db, sql: sql, arguments: ["%\(name)%"])
+        var keys = Set<String>()
+        for row in rows {
+            guard let raw: String = row["handle"] else { continue }
+            keys.insert(DashboardLoader.contactIdentity(forHandle: raw, contacts: contacts).key)
+        }
+        return keys
     }
 
     public func topGroups(
