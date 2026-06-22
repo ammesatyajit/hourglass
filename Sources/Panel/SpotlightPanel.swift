@@ -738,9 +738,18 @@ struct SpotlightPanel: View {
             // Hero candidate (if any) — click to reveal.
             if let hero = result.hero {
                 askCandidateRow(result: hero, isHero: true)
-            } else {
-                // No hero — surface a "didn't find anything" with an
-                // immediate escalate hook.
+            } else if (result.explanation?.isEmpty ?? true) {
+                // No hero AND no textual answer — the agent genuinely found
+                // nothing, so surface the empty state with an escalate hook.
+                //
+                // GUARD on explanation: aggregate answers (e.g. "who did I
+                // text the most" → topContacts) legitimately have NO single
+                // hero message — the explanation banner above IS the answer.
+                // Showing "No matching message found." beneath a confident
+                // answer contradicts it (observed: a who-did-I-text-most
+                // result rendered the answer AND "No matching message found"
+                // at the same time). Only show the empty state when there's
+                // no answer to contradict.
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text("No matching message found.")
                         .font(.callout)
