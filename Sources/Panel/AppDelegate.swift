@@ -279,6 +279,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runHeadlessNLEval(query: evalQuery, mode: .singleShot)
             return
         }
+        // HEADLESS QUERYSPEC-EMISSION PROBE — answers the semantic-layer
+        // feasibility question empirically: can the on-device 4B emit a VALID +
+        // CORRECT dims/metrics/filters QuerySpec? Loads the SAME cached MLX
+        // model but does NOT run the agent or open chat.db — it sends a
+        // QuerySpec system prompt + each "||"-separated query and prints the
+        // RAW model output (lines prefixed `QSPROBE::`) for offline scoring.
+        // Env-var-gated; a normal launch never reaches this.
+        if let probe = ProcessInfo.processInfo.environment["HOURGLASS_QUERYSPEC_PROBE"] {
+            runQuerySpecProbe(queriesRaw: probe)
+            return
+        }
         // HEADLESS KEYWORD-SEARCH probe — model-free (no MLX load), pure SQL.
         // Runs the exact engine the Spotlight panel uses and prints the result
         // count + top rows, so search bugs (e.g. curly-apostrophe phrase
@@ -1047,6 +1058,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///      production path); `.singleShot` → `answer(userQuery:now:)`.
     ///
     /// Every line is prefixed `NLEVAL::` so the caller can `grep NLEVAL`.
+    /// The QuerySpec system prompt UNDER TEST. A well-formed dims/metrics/
+    /// filters spec with worked examples whose people/groups/types DIFFER from
+    /// the probe queries (so we test pattern generalization, not memorization).
+    /// If the 4B can't fill THIS reliably, the semantic-layer's top risk is real.
+    static let querySpecProbePrompt: String = """
+    You translate a natural-language analytics question about the user's iMessage
+    history into a single QuerySpec JSON. Output ONLY the JSON object, nothing else.
+
+    QuerySpec fields:
+    - "metric": count | sent | received | distinct_chats | first_date | last_date
+    - "dimension": none | contact | chat | chat_type | message_type | day | week | month | year | sender | reaction
+        (none = a single total; otherwise the GROUP-BY axis to rank / break down by)
+    - "filters": a structured filter string (or "" for none) using these operators:
+        with:"Name" (any chat with person), from:"Name" (sent by), from:me (sent by you),
+        chat:"Name" (a named chat), type:image|video|audio|sticker|link|file,
+        reactions:love|laugh|like
+    - "in": "all_time" | "last_week" | "last_month" | "YYYY-MM-DD..YYYY-MM-DD" | a year as "YYYY-01-01..YYYY-12-31"
+    - "sort": "metric_desc" (default) or "metric_asc"
+    - "limit": integer (1 for "which/what single", 5 for "who/top", 0 for a pure total)
+
+    Rules:
+    - "who/which/what is the most ..." -> dimension is the thing being ranked
+      (contact, chat, month, sender, message_type); sort metric_desc.
+    - "how many ..." with NO breakdown -> dimension:none.
+    - "per month / each month / which month / busiest month" -> dimension:month.
+    - "inside / within a group, who posts/sends the most" -> dimension:sender + chat:"<group>".
+    - "who I text the most" / "of the people I text" -> dimension:contact.
+    - messages the user RECEIVED (who sends ME) -> metric:received; messages SENT -> metric:sent.
+    - An un-timed superlative defaults to in:"all_time".
+
+    Examples:
+    Q: who did I text the most last year
+    {"metric":"count","dimension":"contact","filters":"","in":"2025-01-01..2025-12-31","sort":"metric_desc","limit":5}
+    Q: how many videos did mom send me
+    {"metric":"count","dimension":"none","filters":"from:\\"Mom\\" type:video","in":"all_time","sort":"metric_desc","limit":0}
+    Q: which month did I text Beck the most
+    {"metric":"count","dimension":"month","filters":"with:\\"Beck\\"","in":"all_time","sort":"metric_desc","limit":1}
+    Q: who sends the most messages in the Lost Causes group
+    {"metric":"count","dimension":"sender","filters":"chat:\\"Lost Causes\\"","in":"all_time","sort":"metric_desc","limit":5}
+    """
+
+    /// Pull a string field (e.g. the QuerySpec's "filters") out of the first
+    /// JSON object in `raw`. Returns nil if absent / unparseable.
+    static func extractJSONString(_ raw: String, key: String) -> String? {
+        guard let slice = PlanJSONParser.extractFirstJSONObject(from: raw),
+              let data = slice.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return nil
+        }
+        return obj[key] as? String
+    }
+
+    /// HEADLESS QUERYSPEC-EMISSION PROBE (see the env-var hook in
+    /// `applicationDidFinishLaunching`). Loads the cached MLX model and, for
+    /// each "||"-separated query, sends `querySpecProbePrompt` + the query and
+    /// prints the raw model output. No agent, no chat.db — a pure test of
+    /// whether the 4B can emit the richer typed spec. Exits when done.
+    private func runQuerySpecProbe(queriesRaw: String) {
+        Task { @MainActor in
+            func emit(_ line: String) { print("QSPROBE:: \(line)"); fflush(stdout) }
+            let queries = queriesRaw
+                .components(separatedBy: "||")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            emit("==== QUERYSPEC EMISSION PROBE (can the on-device 4B emit a QuerySpec?) ====")
+            emit("queries: \(queries.count)")
+
+            // ---- load the same cached MLX model (no chat.db needed) ----
+            guard modelDownloader.isModelCached else {
+                emit("FATAL: model is NOT cached on disk; run the GUI once to fetch it.")
+                emit("==== END (no model cache) ===="); exit(1)
+            }
+            modelDownloader.beginDownload()
+            let loadStart = Date()
+            let loadTimeout: TimeInterval = 300
+            while true {
+                if case .ready = modelDownloader.state, modelDownloader.modelContainer != nil { break }
+                if case .failed(let reason) = modelDownloader.state {
+                    emit("FATAL: model load FAILED — \(reason)")
+                    emit("==== END (load failed) ===="); exit(1)
+                }
+                if Date().timeIntervalSince(loadStart) > loadTimeout {
+                    emit("FATAL: model not ready within \(Int(loadTimeout))s (headless/no-Metal env?).")
+                    emit("==== END (load timeout) ===="); exit(1)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard let container = modelDownloader.modelContainer else {
+                emit("FATAL: container nil after .ready."); emit("==== END ===="); exit(1)
+            }
+            emit(String(format: "model: READY in %.1fs (id=%@)", Date().timeIntervalSince(loadStart), modelDownloader.modelID))
+            let runtime = MLXRuntime(container: container, modelID: modelDownloader.modelID)
+
+            func collapse(_ s: String) -> String {
+                s.replacingOccurrences(of: "\n", with: "⏎").replacingOccurrences(of: "\r", with: "")
+            }
+            let system = Self.querySpecProbePrompt
+            emit("---- SYSTEM PROMPT UNDER TEST ----")
+            for line in system.split(separator: "\n", omittingEmptySubsequences: false) { emit("| \(line)") }
+            emit("---- RESULTS (turn 1 → operatorCorrection gate → turn 2 if flagged) ----")
+            var flagged = 0, fixed = 0
+            for (i, q) in queries.enumerated() {
+                // Turn 1 — emit the spec.
+                let raw1 = (try? await runtime.respond(systemPrompt: system, userPrompt: "Q: \(q)", maxTokens: 256)) ?? "<<ERROR>>"
+                emit("[\(i)] query=\(q)")
+                emit("[\(i)] t1=\(collapse(raw1))")
+                // Run the PRODUCTION operator gate on the emitted `filters`.
+                let filters1 = Self.extractJSONString(raw1, key: "filters") ?? ""
+                guard let corrective = NLAgent.operatorCorrection(for: filters1, now: Date()) else {
+                    emit("[\(i)] gate=clean (filters=\"\(filters1)\")")
+                    continue
+                }
+                flagged += 1
+                emit("[\(i)] gate=FLAGGED (filters=\"\(filters1)\") → \(collapse(String(corrective.prefix(160))))")
+                // Turn 2 — feed the corrective back, ask for a corrected spec.
+                let followup = "Q: \(q)\nYour previous QuerySpec was:\n\(raw1)\nIts \"filters\" value is INVALID: \(corrective)\nRe-emit the FULL corrected QuerySpec JSON (ONLY the JSON)."
+                let raw2 = (try? await runtime.respond(systemPrompt: system, userPrompt: followup, maxTokens: 256)) ?? "<<ERROR>>"
+                let filters2 = Self.extractJSONString(raw2, key: "filters") ?? ""
+                let stillBad = NLAgent.operatorCorrection(for: filters2, now: Date()) != nil
+                if !stillBad { fixed += 1 }
+                emit("[\(i)] t2=\(collapse(raw2))")
+                emit("[\(i)] gate2=\(stillBad ? "STILL-FLAGGED" : "FIXED") (filters=\"\(filters2)\")")
+            }
+            emit("---- SUMMARY: gate flagged \(flagged)/\(queries.count); of those, model self-fixed \(fixed)/\(flagged) on turn 2 ----")
+            await runtime.releaseResources()
+            emit("==== END (success) ===="); exit(0)
+        }
+    }
+
     private func runHeadlessNLEval(query: String, mode: NLEvalMode) {
         // Detached so we never block the main run loop; bumps off the
         // launch frame and drives the async agent loop to completion.
