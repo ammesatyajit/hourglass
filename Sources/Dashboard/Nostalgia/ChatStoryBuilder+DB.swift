@@ -554,11 +554,16 @@ extension ChatStoryBuilder {
             // Dedup events that merged across recreated threads by ROWID.
             var seen = Set<Int64>()
             let dedupEvents = b.events.filter { seen.insert($0.rowID).inserted }
+            // Resolve the merged CURRENT participants to names so the pure
+            // builder can suppress a "left" moment for anyone still present
+            // (e.g. a removed phone handle of a person who remains via email).
+            let participantNames = Set(b.participants.map { contacts.name(forRawHandle: $0) })
             out.append(RawChat(
                 chatRowID: b.primaryRowID,
                 title: b.title,
                 isGroup: b.isGroup,
                 participantCount: max(b.participants.count, b.isGroup ? b.participants.count : 1),
+                currentParticipantNames: participantNames,
                 avatarData: b.avatarData,
                 messages: b.messages,
                 events: dedupEvents

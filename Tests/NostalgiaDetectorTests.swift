@@ -730,6 +730,39 @@ final class NostalgiaDetectorTests: XCTestCase {
         XCTAssertEqual(Set(joins.compactMap(\.person)), ["Venkat Chitturi", "Atul"])
     }
 
+    /// A "left" moment must be SUPPRESSED for someone still in the chat —
+    /// e.g. a person whose phone handle was removed but who remains via their
+    /// email handle. Reported bug: "Arnav left" while Arnav is still in the
+    /// group (his +1650… handle was removed; he stays via his @gmail handle,
+    /// both resolving to "Arnav Swamy").
+    func testStory_membershipSuppressesLeftForCurrentParticipant() {
+        let d = date(year: 2023, month: 12, day: 27)
+        let events = [
+            ChatStoryBuilder.RawEvent(rowID: 10, date: d, actor: "Arnav Swamy",
+                                      kind: .removed(person: "Arnav Swamy")),
+            ChatStoryBuilder.RawEvent(rowID: 11, date: addHours(1, to: d), actor: "You",
+                                      kind: .removed(person: "Gandharva")),
+        ]
+        let moments = ChatStoryBuilder.membershipMoments(
+            events, calendar: calendar, currentParticipants: ["Arnav Swamy"])
+        let lefts = moments.filter { $0.kind == .left }
+        XCTAssertEqual(Set(lefts.compactMap(\.person)), ["Gandharva"],
+                       "Arnav (still a participant) suppressed; Gandharva (gone) kept")
+    }
+
+    /// An UNRESOLVED removed handle must NOT be blamed on the actor who did the
+    /// removing. The old code fell back to the actor's name → "<remover> left".
+    func testStory_membershipUnknownRemovedNotBlamedOnActor() {
+        let d = date(year: 2024, month: 3, day: 1)
+        let events = [
+            ChatStoryBuilder.RawEvent(rowID: 20, date: d, actor: "Arnav Swamy",
+                                      kind: .removed(person: "?")),
+        ]
+        let moments = ChatStoryBuilder.membershipMoments(events, calendar: calendar)
+        XCTAssertTrue(moments.filter { $0.kind == .left }.isEmpty,
+                      "an unknown removed handle is not the actor leaving — emit nothing")
+    }
+
     /// Group sort: stories ranked by message count desc.
     func testStory_buildStoriesSortsByMessageCountDesc() {
         func chat(_ id: Int64, _ title: String, _ n: Int) -> ChatStoryBuilder.RawChat {

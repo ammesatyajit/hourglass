@@ -107,6 +107,11 @@ public enum ChatStoryBuilder {
         public let title: String
         public let isGroup: Bool
         public let participantCount: Int
+        /// Resolved display names of the chat's CURRENT participants (merged
+        /// across recreated threads). Used to suppress a phantom "left" moment
+        /// for someone still in the chat — e.g. a person whose phone handle was
+        /// removed while they remain via their email handle.
+        public let currentParticipantNames: Set<String>
         public let avatarData: Data?
         public let messages: [RawMessage]
         public let events: [RawEvent]
@@ -116,6 +121,7 @@ public enum ChatStoryBuilder {
             title: String,
             isGroup: Bool,
             participantCount: Int,
+            currentParticipantNames: Set<String> = [],
             avatarData: Data?,
             messages: [RawMessage],
             events: [RawEvent]
@@ -124,6 +130,7 @@ public enum ChatStoryBuilder {
             self.title = title
             self.isGroup = isGroup
             self.participantCount = participantCount
+            self.currentParticipantNames = currentParticipantNames
             self.avatarData = avatarData
             self.messages = messages
             self.events = events
@@ -167,7 +174,9 @@ public enum ChatStoryBuilder {
 
         // 5) groups only: membership / rename events.
         if chat.isGroup {
-            moments.append(contentsOf: membershipMoments(chat.events, calendar: calendar))
+            moments.append(contentsOf: membershipMoments(
+                chat.events, calendar: calendar,
+                currentParticipants: chat.currentParticipantNames))
         }
 
         moments.sort { $0.date < $1.date }
@@ -379,7 +388,7 @@ public enum ChatStoryBuilder {
     /// same-named threads each log the SAME real-world event with a DIFFERENT
     /// ROWID, so folding threads otherwise double-counts every join/leave. We
     /// keep the first occurrence per (kind, subject, day). PURE.
-    static func membershipMoments(_ events: [RawEvent], calendar: Calendar) -> [NotableMoment] {
+    static func membershipMoments(_ events: [RawEvent], calendar: Calendar, currentParticipants: Set<String> = []) -> [NotableMoment] {
         var out: [NotableMoment] = []
         out.reserveCapacity(events.count)
         var seenSemantic = Set<String>()
@@ -412,14 +421,26 @@ public enum ChatStoryBuilder {
                     idDiscriminator: String(e.rowID)
                 ))
             case .removed(let person):
-                let subject = (person.isEmpty || person == "?") ? e.actor : person
-                guard !subject.isEmpty, subject != "?" else { continue }
+                // The person who LEFT is the REMOVED participant (other_handle).
+                // NEVER fall back to the actor: the actor PERFORMED the removal,
+                // they didn't leave. The old fallback printed "<remover> left"
+                // whenever the removed handle was unresolved — so removing an
+                // unknown number read as the remover leaving.
+                let leaver = person
+                guard !leaver.isEmpty, leaver != "?" else { continue }
+                // Suppress a phantom "left" for someone STILL in the chat — e.g.
+                // a person whose phone handle was removed while they remain via
+                // their email handle (reported: "Arnav left" when Arnav is very
+                // much still in the group), or who was later re-added. Matched by
+                // resolved name so a different handle of the same person counts
+                // as present.
+                if currentParticipants.contains(leaver) { continue }
                 out.append(NotableMoment(
                     kind: .left,
                     date: e.date,
-                    headline: "\(subject) left",
+                    headline: "\(leaver) left",
                     detail: MomentFormat.day(e.date),
-                    person: subject,
+                    person: leaver,
                     idDiscriminator: String(e.rowID)
                 ))
             case .renamed(let title):
