@@ -103,3 +103,27 @@ Corollary (research): for tool-calling, "architecture/training matters more than
 - 2026-06-16 · `catch me up on beck and annika` (agentic; VERIFY the #47 summarizeArgs fix on the impactful readMessages multi-person case) · iter1 `readMessages with:"Beck"` → 80 msgs (Jacobian/stats) → iter2 `readMessages with:"Annika"` (SAME date range, DIFFERENT person) → NOW RUNS (was false-flagged as a duplicate pre-#47) → 80 msgs (Klemm meeting/flight/study) → iter3 synthesizes BOTH ("Beck discussed a Jacobian… Annika planned a Klemm meeting…") · **PASS** · confirms the #47 dup-signature fix generalizes from messagesAroundTime to the impactful case: multi-person investigative queries ("catch me up on X and Y") now read EACH person instead of being blocked on the 2nd. No optimization. Scorecard: 7 mechanism-bugs + 7 validations.
 - 2026-06-16 · `how many documents have i sent` (agentic; type:file) · `countMatching from:me type:file` → Count=1602 → "1602 documents." EXACT (ground truth from:me type:file=1602) · **PASS** · type:file validated. Type-value coverage now COMPLETE: image/video/audio/link/file all ✓ (only type:sticker untested — identical pattern). No optimization. Scorecard: 7 mechanism-bugs + 8 validations.
 - 2026-06-16 · `how many stickers have i sent` (agentic; type:sticker — LAST untested type value) · `countMatching from:me type:sticker` → Count=451 → "451 stickers." EXACT (ground truth 451) · **PASS** · type:sticker validated. TYPE-VALUE COVERAGE 100% COMPLETE: image/video/audio/link/file/sticker all ✓. No optimization. Scorecard: 7 mechanism-bugs + 9 validations + 3 interp/capacity FAILs + 2 deliberate.
+
+## Semantic-layer (QuerySpec) feasibility — empirical 4B emission probe (2026-06-26)
+Question raised by the value-eval: its #1 risk was "the 4B can't emit a richer dims/metrics/filters QuerySpec." Tested empirically via a headless probe (`HOURGLASS_QUERYSPEC_PROBE`, AppDelegate) — loads the real Qwen3-4B, hands it a well-formed QuerySpec prompt (schema + 4 worked examples with DIFFERENT people/groups/types than the test set), captures raw output. Pure emission test (no agent, no chat.db).
+
+RESULT (11 queries; 11/11 valid JSON, 11/11 valid metric+dimension enum values):
+| # | query | dimension routing | verdict |
+|---|-------|-------------------|---------|
+| 0 | busiest MONTH texting Annika | month ✓ | PERFECT |
+| 1 | who sends me the most IMAGES | contact ✓ + metric:received ✓ + type:image | PERFECT (hard: received+type) |
+| 2 | messages I SENT each MONTH 2026 | month ✓ | metric count (should be sent/from:me) — partial |
+| 3 | who posts most INSIDE Hao group | sender ✓ | correct (the key unlock) |
+| 4 | which GROUP CHAT most STICKERS | chat ✓ | filter `message_type:sticker` INVALID op (should be type:) |
+| 5 | who I text most IN Hao group | contact ✓ + chat:"Hao" | correct |
+| 6 | who I text most 2026 (control) | contact ✓ | PERFECT |
+| 7 | PHOTOS I sent last month (control) | none ✓ | WRONG: `sent type:sticker` (sticker≠photos, sent≠from:me) |
+| 8 | who I text most LAST WEEK (control) | contact ✓ | WRONG window: in:last_month (≠last_week) |
+| 9 | DAY OF WEEK I text most (oos) | day | no weekday dim — nearest |
+| 10 | PERCENT with a reaction (oos) | none | no ratio metric; `reaction:`≠`reactions:` |
+
+KEY FINDING: the structural concern is largely REFUTED. Dimension routing (the thing IMPOSSIBLE in today's date-only aggregation tools) was correct 6/6 on the unlocks (month, contact, month, sender, chat, contact). The "bigger nested spec → lower reliability" fear did NOT materialize for structure. Every failure is in the FILTER-OPERATOR STRING or DATE WINDOW — the model's PRE-EXISTING weaknesses (type-value confusion image↔sticker, from:me↔"sent", last_week↔last_month, reactions:↔reaction:), identical to what the current flat-tool agent already does. Not spec-induced.
+
+IMPLICATION for the build-minimal verdict: softens (does not remove) the top model-capacity risk — structural feasibility is real; the spec still needs the same operatorCorrection gate the current path uses. Does NOT change the demand question (unlocks are speculative stretch queries) or the opportunity-cost point (open multi-term-OR bug hits the REAL corpus).
+
+FOLLOW-UP IN PROGRESS: re-run with `operatorCorrection` applied to each emitted `filters` + a 2nd model turn fed the corrective, to measure the gate's catch + the model's self-fix rate. Probe extended with the correction loop; BUILD BLOCKED on a missing Metal toolchain (Xcode 26.6 update invalidated MLX's cached Metal shaders → `xcodebuild -downloadComponent MetalToolchain` running). Preliminary TRACE of operatorCorrection over the 11 filter strings predicts: CATCHES [10] reaction: (unknown op); MISSES [4] message_type: (underscore exempts it from the all-letters unknown-op check — a GATE GAP) and [7] sent/sticker (bare "sent" = free text; "sticker" is a VALID type value so the semantic image-vs-sticker error is invisible to a syntax gate). To be confirmed empirically post-build.
