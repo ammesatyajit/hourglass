@@ -487,6 +487,35 @@ final class NLAgentReActTests: XCTestCase {
         XCTAssertNil(NLAgent.resolveDateArg([:], now: now))
     }
 
+    // MARK: - operatorCorrection — unknown operators
+
+    /// A snake_case fake operator (`message_type:`, `from_me:`) must be flagged.
+    /// The unknown-operator check used to require an all-LETTERS key, so an
+    /// underscore exempted these → they slipped through as free text and
+    /// silently matched nothing. (Surfaced by the QuerySpec emission probe,
+    /// which had the 4B emit `message_type:sticker`.)
+    func testOperatorCorrection_flagsUnderscoreFakeOperator() {
+        let now = Date()
+        let c1 = NLAgent.operatorCorrection(for: "message_type:sticker", now: now)
+        XCTAssertNotNil(c1, "message_type: should be flagged as an unknown operator")
+        XCTAssertTrue(c1?.contains("message_type:") ?? false)
+        XCTAssertNotNil(NLAgent.operatorCorrection(for: "from_me:", now: now),
+                        "from_me: should be flagged too")
+    }
+
+    /// A fully valid operator query must NOT be flagged (no false positives
+    /// from widening the key charset).
+    func testOperatorCorrection_validQueryNotFlagged() {
+        XCTAssertNil(NLAgent.operatorCorrection(for: "from:me type:image", now: Date()))
+    }
+
+    /// A clock time isn't an operator — its key ("8") is neither a letter nor
+    /// an underscore, so widening the charset must not start catching times.
+    func testOperatorCorrection_timeTokenNotFlagged() {
+        XCTAssertNil(NLAgent.operatorCorrection(for: "meeting at 8:30", now: Date()),
+                     "a time like 8:30 must not be flagged as an operator")
+    }
+
     // MARK: - ReAct loop — happy paths
 
     /// "who did I text the most in 2026" — one tool call, then a final answer.

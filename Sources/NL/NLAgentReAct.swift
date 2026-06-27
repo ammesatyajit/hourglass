@@ -802,12 +802,19 @@ public extension NLAgent {
                 }
             }
             // (2) unknown `word:` operator. Times like `8:30` are safe — the
-            // segment before ':' isn't all letters. A real value after a valid
+            // segment before ':' isn't letters. A real value after a valid
             // prefix (before:2026-01-01) keeps its prefix in `validPrefixes`.
+            // The key may contain an UNDERSCORE: a snake_case fake operator
+            // (`message_type:`, `from_me:`) is exactly the kind of invalid
+            // token a model emits, and an all-letters-only test silently let
+            // it slip through as free text → 0 results (the QuerySpec probe hit
+            // this with `message_type:sticker`). Allow `_` in the key so these
+            // are flagged too; valid operators are plain letters, so they're
+            // unaffected (and excluded via `validPrefixes` regardless).
             if let colon = tok.firstIndex(of: ":") {
                 let word = tok[tok.startIndex..<colon]
                 let prefix = String(tok[tok.startIndex...colon]).lowercased() // incl. ':'
-                if !word.isEmpty && word.allSatisfy({ $0.isLetter }) && !validPrefixes.contains(prefix) {
+                if !word.isEmpty && word.allSatisfy({ $0.isLetter || $0 == "_" }) && !validPrefixes.contains(prefix) {
                     unknownOps.append(String(tok))
                     continue
                 }
