@@ -494,6 +494,13 @@ struct ActivitySparkline: View {
             ctx.stroke(line, with: .color(Color.accentColor.opacity(0.22)),
                        style: StrokeStyle(lineWidth: 1, lineJoin: .round))
         }
+        // `samples` is STATIC per chat — this path never changes once the story
+        // is built. Rasterize it once into an offscreen GPU buffer so scrolling
+        // (which streams lazy rows in/out, re-materializing this background) just
+        // composites the cached texture instead of re-drawing 80 quad-curves per
+        // row per mount. This is the dominant per-frame cost on the Nostalgia
+        // scroll path (the sparkline was added after the earlier perf audits).
+        .drawingGroup()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
