@@ -59,6 +59,14 @@ struct SocialGraphCanvas: View {
                 drawEdges(ctx: ctx, transform: transform)
                 drawNodes(ctx: ctx, transform: transform, size: size)
             }
+            // Flatten the whole edges+nodes+labels draw into ONE offscreen GPU
+            // texture. This is a complex vector Canvas (per-node circles, halos,
+            // and expensive per-label `ctx.resolve(Text)`); without this, the
+            // page ScrollView re-rasterizes it as it moves, making the graph a
+            // big contributor to page-scroll lag. Flattened, scrolling just
+            // translates the cached texture. The live hover label sits OUTSIDE
+            // this (labelOverlay in the ZStack) so it stays interactive.
+            .drawingGroup()
             .contentShape(Rectangle())
 
             // Floating label for the active (hovered or pinned) node, if
