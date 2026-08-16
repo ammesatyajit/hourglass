@@ -93,16 +93,23 @@ public struct AvatarView: View {
         return c
     }()
 
+    /// Shared cached decode — same bytes → same `NSImage` instance. Exposed
+    /// so OTHER avatar renderers (e.g. the group-composite circles in
+    /// `TopList`) reuse this cache instead of re-decoding per body eval.
+    static func cachedDecode(_ data: Data?) -> NSImage? {
+        guard let data, !data.isEmpty else { return nil }
+        let key = data as NSData
+        if let cached = decodeCache.object(forKey: key) { return cached }
+        guard let image = NSImage(data: data) else { return nil }
+        decodeCache.setObject(image, forKey: key)
+        return image
+    }
+
     /// Garbage-in (corrupt bytes, non-image data) returns nil and we fall
     /// through to initials cleanly — never a crash, never a flashing black
     /// square. Failed decodes aren't cached; they're rare and cheap to retry.
     private var decodedImage: NSImage? {
-        guard let imageData, !imageData.isEmpty else { return nil }
-        let key = imageData as NSData
-        if let cached = Self.decodeCache.object(forKey: key) { return cached }
-        guard let image = NSImage(data: imageData) else { return nil }
-        Self.decodeCache.setObject(image, forKey: key)
-        return image
+        Self.cachedDecode(imageData)
     }
 
     /// Initials font scales linearly with diameter so a 28pt avatar reads

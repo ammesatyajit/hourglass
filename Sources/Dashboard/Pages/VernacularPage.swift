@@ -74,7 +74,7 @@ struct VernacularPage: View {
         DashboardScrollPage(
             title: "Vernacular",
             subtitle: subtitle,
-            accessory: { DashboardSearchPill(action: onSearchTap) },
+            onSearchTap: onSearchTap,
             content: { content }
         )
         // Kick the vernacular analysis when the page first appears. Idempotent —
@@ -86,13 +86,13 @@ struct VernacularPage: View {
     private var subtitle: String {
         switch vernacular.state {
         case .loaded:
-            return "The words that are uniquely yours — and the people you traded them with"
+            return "The use of words amongst your friends and how they're traded"
         case .loading, .idle:
             return "Finding the words that are uniquely yours…"
         case .empty:
             return "Not enough messages yet"
         case .failed:
-            return "The words that are uniquely yours — and the people you traded them with"
+            return "The use of words amongst your friends and how they're traded"
         }
     }
 

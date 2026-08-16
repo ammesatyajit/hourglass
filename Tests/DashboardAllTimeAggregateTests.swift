@@ -113,6 +113,11 @@ final class DashboardAllTimeAggregateTests: XCTestCase {
                 DailyCount(dayIndex: $0, sent: 1, received: 1)
             }
         )
+        let chats = [
+            ChatDailySeries(chatRowID: 1, days: [100, 101]),
+            ChatDailySeries(chatRowID: 2, days: [103, 104]),
+            ChatDailySeries(chatRowID: 7, days: [100, 101, 102, 103, 104]),
+        ]
 
         let aggregate = DashboardAllTimeAggregate(
             calendar: cal,
@@ -121,7 +126,8 @@ final class DashboardAllTimeAggregateTests: XCTestCase {
             allTimeOldest: Date(timeIntervalSinceReferenceDate: 100 * 86_400),
             allTimeNewest: Date(timeIntervalSinceReferenceDate: 104 * 86_400),
             contactSeries: [alice, bob],
-            groupSeries: [group]
+            groupSeries: [group],
+            chatSeries: chats
         )
 
         // ---- All time ----
@@ -150,6 +156,8 @@ final class DashboardAllTimeAggregateTests: XCTestCase {
         // Group present (1 sent per day × 2 days = 2 sent).
         XCTAssertEqual(brushed.topGroups.count, 1)
         XCTAssertEqual(brushed.topGroups[0].sentByYou, 2)
+        XCTAssertEqual(brushed.overview.chats, 2,
+                       "Only Alice's chat and the group are active in this brush.")
 
         // ---- Brushed middle (day 102 only) — neither contact ----
         let mid = aggregate.date(forDayIndex: 102)
@@ -158,10 +166,8 @@ final class DashboardAllTimeAggregateTests: XCTestCase {
         XCTAssertEqual(brushedMid.overview.sent, 3) // day 102 overview
         XCTAssertEqual(brushedMid.topContacts.count, 0, "No contact has day 102 activity")
         XCTAssertEqual(brushedMid.topGroups.count, 1, "Group is active every day")
-
-        // ---- chats count is sticky (all-time semantics) ----
-        XCTAssertEqual(brushed.overview.chats, 3,
-                       "Conversations tile should NOT change with brush.")
+        XCTAssertEqual(brushedMid.overview.chats, 1,
+                       "Chats must follow the same selected range as the other counters.")
     }
 
     /// Empty range — lo > hi — returns a zero-data snapshot rather

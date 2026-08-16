@@ -84,6 +84,29 @@ final class DashboardLoaderTests: XCTestCase {
         }
     }
 
+    /// Regression: the initial 30d dashboard snapshot must not reuse the
+    /// all-time headline counters while only filtering the chart/lists.
+    func testOverviewLast30DaysUsesSelectedWindow() throws {
+        let db = try openFixture()
+        let stats = try DashboardLoader.loadSync(
+            database: db,
+            contacts: emptyContacts,
+            window: .last30Days,
+            now: testNow,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(stats.overview.total, 11)
+        XCTAssertEqual(stats.overview.sent, 8)
+        XCTAssertEqual(stats.overview.received, 3)
+        XCTAssertEqual(stats.overview.chats, 4)
+        XCTAssertEqual(
+            stats.overview.total,
+            stats.timeSeries.reduce(0) { $0 + $1.sent + $1.received },
+            "Headline total and chart must describe the same 30-day range."
+        )
+    }
+
     // MARK: - Top contacts (last 30 days)
 
     /// In the last-30-days window, the high-volume 1:1 must come first

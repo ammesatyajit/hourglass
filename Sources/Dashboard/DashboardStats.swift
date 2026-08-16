@@ -110,19 +110,25 @@ public struct DashboardStats: Sendable {
         public let total: Int
         public let chatAvatarData: Data?
         public let participantAvatars: [Data?]
+        /// Raw Messages handles of every participant — lets a share
+        /// pre-address the whole group. Defaulted so fixtures/tests that
+        /// don't care stay source-compatible.
+        public let participantHandles: [String]
 
         public var id: Int64 { chatRowID }
 
         public init(chatRowID: Int64, displayName: String,
                     sentByYou: Int, total: Int,
                     chatAvatarData: Data? = nil,
-                    participantAvatars: [Data?] = []) {
+                    participantAvatars: [Data?] = [],
+                    participantHandles: [String] = []) {
             self.chatRowID = chatRowID
             self.displayName = displayName
             self.sentByYou = sentByYou
             self.total = total
             self.chatAvatarData = chatAvatarData
             self.participantAvatars = participantAvatars
+            self.participantHandles = participantHandles
         }
     }
 

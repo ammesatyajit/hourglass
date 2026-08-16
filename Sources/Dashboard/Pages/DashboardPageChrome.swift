@@ -24,6 +24,12 @@ import KeyboardShortcuts
 struct DashboardScrollPage<Accessory: View, Content: View>: View {
     let title: String
     var subtitle: String?
+    /// When set, the header renders the prominent CENTERED search bar
+    /// (the app's one route into the Spotlight panel). Lives in the chrome
+    /// so every page gets the same bar in the same place; the trailing
+    /// `accessory` stays for page-specific controls (e.g. Overview's
+    /// time-range selector).
+    var onSearchTap: (() -> Void)? = nil
     @ViewBuilder var accessory: () -> Accessory
     @ViewBuilder var content: () -> Content
 
@@ -46,7 +52,7 @@ struct DashboardScrollPage<Accessory: View, Content: View>: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Space.lg) {
+        HStack(alignment: .center, spacing: Space.lg) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.largeTitle.weight(.bold))
@@ -65,6 +71,16 @@ struct DashboardScrollPage<Accessory: View, Content: View>: View {
                 .fixedSize(horizontal: true, vertical: false)
         }
         .frame(minHeight: 44)
+        // The search bar is an OVERLAY centered on the header itself, so it
+        // sits at the page's geometric center — identical position on every
+        // page regardless of how wide "Overview"/"Vernacular"/"Nostalgia"
+        // (or the trailing accessory) happens to be.
+        .overlay {
+            if let onSearchTap {
+                DashboardSearchPill(action: onSearchTap, prominent: true)
+                    .frame(maxWidth: 460)
+            }
+        }
     }
 }
 
@@ -73,10 +89,12 @@ extension DashboardScrollPage where Accessory == EmptyView {
     init(
         title: String,
         subtitle: String? = nil,
+        onSearchTap: (() -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.title = title
         self.subtitle = subtitle
+        self.onSearchTap = onSearchTap
         self.accessory = { EmptyView() }
         self.content = content
     }
@@ -91,19 +109,27 @@ extension DashboardScrollPage where Accessory == EmptyView {
 /// search and natural-language ask (`docs/nl-placement.md`).
 struct DashboardSearchPill: View {
     let action: () -> Void
+    /// Prominent = the header's centered search BAR: taller, field-like
+    /// (icon + label left, hotkey badge pushed to the trailing edge), and
+    /// it stretches to the width its container allows. The compact form
+    /// remains for tight spots.
+    var prominent: Bool = false
     @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Space.xs) {
+            HStack(spacing: prominent ? Space.sm : Space.xs) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: prominent ? 14 : 12, weight: .semibold))
                     .foregroundStyle(Color.accentColor.opacity(isHovering ? 1.0 : 0.85))
-                    .frame(width: 14)
+                    .frame(width: prominent ? 16 : 14)
                 Text("Search or ask")
-                    .font(.subheadline.weight(.medium))
+                    .font(prominent ? .body.weight(.medium) : .subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                if prominent {
+                    Spacer(minLength: Space.sm)
+                }
                 KeyboardShortcutBadge(
                     name: .toggleSpotlightPanel,
                     unsetBehavior: .hidden,
@@ -111,8 +137,9 @@ struct DashboardSearchPill: View {
                 )
                 .padding(.leading, 2)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, prominent ? 14 : 10)
+            .padding(.vertical, prominent ? 9 : 6)
+            .frame(maxWidth: prominent ? .infinity : nil)
             .contentShape(RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -156,7 +183,7 @@ struct DashboardAccessPrompt: View {
                         .font(.headline)
                 }
 
-                Text("Everything stays on this Mac. Hourglass searches and analyzes your iMessage history locally — nothing is uploaded, sent, or shared.")
+                Text("Hourglass needs access to your chat.db. All analysis stays on this Mac, nothing requires the internet or is uploaded anywhere.")
                     .font(.callout)
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)

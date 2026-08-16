@@ -45,6 +45,15 @@ struct FrequencyChart: View {
 
     /// Live hover position — drives the tooltip rule + selection ring.
     @State private var hoverDate: Date?
+    /// X of the SNAPPED hover bucket in chart-view space — the dashed rule
+    /// draws at the snapped bucket, so the tooltip centers on the same x
+    /// (a tooltip pinned to a corner while the rule tracks the cursor reads
+    /// as misaligned).
+    @State private var hoverX: CGFloat?
+    /// Live chart width + measured tooltip width, for clamping the tooltip
+    /// inside the chart bounds.
+    @State private var chartWidth: CGFloat = 0
+    @State private var tooltipWidth: CGFloat = 240
 
     var body: some View {
         if buckets.isEmpty {
@@ -142,25 +151,53 @@ struct FrequencyChart: View {
                     .fill(Color.clear)
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
+                        chartWidth = geo.size.width
                         switch phase {
                         case .active(let p):
                             if let date = dateForPoint(p, proxy: proxy, geo: geo) {
                                 hoverDate = date
+                                // Snap the tooltip x to the same bucket the
+                                // dashed rule draws at, in chart-view space.
+                                if let bucket = nearestBucket(to: date),
+                                   let plotFrame = proxy.plotFrame,
+                                   let snapped = proxy.position(forX: bucket.date) {
+                                    hoverX = snapped + geo[plotFrame].origin.x
+                                } else {
+                                    hoverX = nil
+                                }
                             } else {
                                 hoverDate = nil
+                                hoverX = nil
                             }
                         case .ended:
                             hoverDate = nil
+                            hoverX = nil
                         }
                     }
             }
         }
         .chartXScale(domain: chartXDomain())
         .animation(.bmDefault, value: visibleRange)
+        // Hovering: the tooltip rides ABOVE the dashed rule, centered on the
+        // snapped bucket x (clamped to the chart edges) so line + bar align.
+        .overlay(alignment: .topLeading) {
+            if let hoverDate, let bucket = nearestBucket(to: hoverDate), let hoverX {
+                hoverTooltip(bucket: bucket)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                        tooltipWidth = $0
+                    }
+                    .offset(x: clampedTooltipX(centeredOn: hoverX), y: 4)
+                    .animation(.bmHover, value: hoverX)
+                    .transition(.opacity)
+            }
+        }
+        // Idle: the quiet legend keeps its corner.
         .overlay(alignment: .topTrailing) {
-            tooltip
-                .padding(.top, 4)
-                .padding(.trailing, 4)
+            if hoverDate == nil {
+                staticLegend
+                    .padding(.top, 4)
+                    .padding(.trailing, 4)
+            }
         }
         .frame(minHeight: 220, idealHeight: 260)
         .accessibilityLabel(accessibilityLabel)
@@ -169,42 +206,45 @@ struct FrequencyChart: View {
 
     // MARK: - Tooltip
 
-    private var tooltip: some View {
-        Group {
-            if let hoverDate, let bucket = nearestBucket(to: hoverDate) {
-                HStack(spacing: Space.md) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(tooltipDateLabel(for: bucket.date))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    Divider()
-                        .frame(height: 22)
-                    legendDot(.accentColor, label: "Sent", value: bucket.sent)
-                    legendDot(.secondary, label: "Received", value: bucket.received)
-                }
-                .padding(.horizontal, Space.sm)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
-                        .fill(.regularMaterial)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
-                        .strokeBorder(Color.hairline, lineWidth: 0.5)
-                )
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            } else {
-                // Static legend when not hovering.
-                HStack(spacing: Space.md) {
-                    legendDot(.accentColor, label: "Sent", value: nil)
-                    legendDot(.secondary, label: "Received", value: nil)
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    /// Leading offset that centers the tooltip on `x` without letting it
+    /// poke past either chart edge.
+    private func clampedTooltipX(centeredOn x: CGFloat) -> CGFloat {
+        let maxLeading = max(0, chartWidth - tooltipWidth)
+        return min(max(0, x - tooltipWidth / 2), maxLeading)
+    }
+
+    private func hoverTooltip(bucket: DashboardStats.TimeBucket) -> some View {
+        HStack(spacing: Space.md) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tooltipDateLabel(for: bucket.date))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
+            Divider()
+                .frame(height: 22)
+            legendDot(.accentColor, label: "Sent", value: bucket.sent)
+            legendDot(.secondary, label: "Received", value: bucket.received)
         }
-        .animation(.bmHover, value: hoverDate)
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .strokeBorder(Color.hairline, lineWidth: 0.5)
+        )
+    }
+
+    /// Quiet legend for the idle (not-hovering) state.
+    private var staticLegend: some View {
+        HStack(spacing: Space.md) {
+            legendDot(.accentColor, label: "Sent", value: nil)
+            legendDot(.secondary, label: "Received", value: nil)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder

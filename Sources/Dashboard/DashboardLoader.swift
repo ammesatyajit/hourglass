@@ -27,9 +27,9 @@ import GRDB
 
 public enum DashboardLoader {
 
-    /// User-selectable rollup window. Drives both the time-series bucketing
-    /// resolution and the contact/group rankings (those are scoped to the
-    /// window too — "people I've texted the most lately").
+    /// User-selectable rollup window. Drives the headline counters, time-series
+    /// bucketing, and contact/group rankings so the complete Overview page
+    /// always describes one consistent period.
     public enum Window: Sendable, Hashable, CaseIterable, Identifiable {
         case last30Days
         case last12Months
@@ -185,7 +185,7 @@ public enum DashboardLoader {
         let dateRange = dateRange(for: window, now: now, calendar: calendar)
 
         return try database.dbQueue.read { db in
-            let overview = try loadOverview(db: db)
+            let overview = try loadOverview(db: db, dateRange: dateRange)
             let timeSeries = try loadTimeSeries(
                 db: db,
                 bucketing: window.bucketing,
@@ -213,9 +213,14 @@ public enum DashboardLoader {
 
     // MARK: - Overview
 
-    /// Header strip: total / sent / received / chats / span. All-time scope —
-    /// these are the "ever" numbers and don't track the time selector.
-    static func loadOverview(db: Database) throws -> DashboardStats.OverviewCounters {
+    /// Header strip: total / sent / received / chats / span. Every value is
+    /// scoped to the same range as the chart and leaderboards. This matters on
+    /// cold launch: the fast SQL snapshot is the first thing the user sees,
+    /// before the all-time brush aggregate has finished loading.
+    static func loadOverview(
+        db: Database,
+        dateRange: ClosedRange<Date>? = nil
+    ) throws -> DashboardStats.OverviewCounters {
         struct Row1: FetchableRecord {
             let total: Int
             let sent: Int
@@ -231,9 +236,11 @@ public enum DashboardLoader {
             }
         }
 
-        // One query for the four counters and the date span. The COALESCE on
-        // is_from_me defends against pathological rows where the column is
-        // NULL — treat as received.
+        let (dateSQL, dateArgs) = dateClause(dateRange)
+
+        // One query for the message counters and visible date span. The
+        // COALESCE on is_from_me defends against pathological rows where the
+        // column is NULL — treat as received.
         let counters = try Row1.fetchOne(db, sql: """
             SELECT
                 COUNT(*)                                                        AS total,
@@ -243,7 +250,8 @@ public enum DashboardLoader {
                 MAX(m.date)                                                     AS max_date
             FROM message m
             WHERE m.associated_message_type = 0
-            """)
+              \(dateSQL)
+            """, arguments: StatementArguments(dateArgs))
 
         // Count only chats that have at least one REAL message — drop
         // tapbacks/reactions from the qualifying set and drop chats with
@@ -260,7 +268,8 @@ public enum DashboardLoader {
             FROM chat_message_join cmj
             JOIN message m ON m.ROWID = cmj.message_id
             WHERE m.associated_message_type = 0
-            """) ?? 0
+              \(dateSQL)
+            """, arguments: StatementArguments(dateArgs)) ?? 0
 
         let oldest = counters?.minDate.map(MessageDate.date(fromRaw:))
         let newest = counters?.maxDate.map(MessageDate.date(fromRaw:))
@@ -582,17 +591,20 @@ public enum DashboardLoader {
                 sentByYou: sent,
                 total: total,
                 chatAvatarData: chatAvatar,
-                participantAvatars: participantAvatars
+                participantAvatars: participantAvatars,
+                participantHandles: participantInfo.map(\.handle)
             ))
         }
         return stats
     }
 
     /// Per-participant info we need for a group row — name (for the label
-    /// fallback) and avatar bytes (for the composite-fallback).
+    /// fallback), avatar bytes (for the composite-fallback), and the raw
+    /// Messages handle (so shares can pre-address the whole group).
     struct GroupParticipant: Equatable {
         let name: String
         let avatarData: Data?
+        let handle: String
     }
 
     /// One round-trip to fetch participant handles for a known set of chats,
@@ -621,7 +633,7 @@ public enum DashboardLoader {
             let resolved = contacts.byHandle[Handle(raw: rawHandle)]
             let name = resolved?.displayName ?? rawHandle
             byChat[chatID, default: []].append(
-                GroupParticipant(name: name, avatarData: resolved?.avatarData)
+                GroupParticipant(name: name, avatarData: resolved?.avatarData, handle: rawHandle)
             )
         }
         return byChat
@@ -668,7 +680,7 @@ public enum DashboardLoader {
     // MARK: - All-time aggregate (powers the brush-drag interaction)
 
     /// Build the in-memory aggregate the dashboard uses for zero-latency
-    /// brush dragging. Runs four `GROUP BY` queries (no SQL during drag
+    /// brush dragging. Runs five `GROUP BY` queries (no SQL during drag
     /// — this is the only time we pay SQL cost). On the user's real DB:
     ///
     /// | Query                       | Rows in result | Wall-clock |
@@ -677,6 +689,7 @@ public enum DashboardLoader {
     /// | overview metadata           | 1 row         | ~15 ms     |
     /// | contactSeries pre-aggregate | ~250k rows    | ~210 ms    |
     /// | groupSeries pre-aggregate   | ~80k rows     | ~110 ms    |
+    /// | chat active-day series      | sparse rows   | DB-dependent |
     /// | participant + photo resolve | per-group     | ~50 ms     |
     /// | **TOTAL**                   |               | **~470 ms**|
     ///
@@ -708,7 +721,7 @@ public enum DashboardLoader {
             //    the chat count, min/max date. Sent/received/total are
             //    derivable from the daily series so we don't double-
             //    count here.
-            let overview = try loadOverview(db: db)
+            let overview = try loadOverview(db: db, dateRange: nil)
 
             // 2) Global daily timeline. Single query, one row per day.
             //    Used as both the chart's data AND the source of truth
@@ -733,6 +746,11 @@ public enum DashboardLoader {
                 calendar: calendar
             )
 
+            // 5) Per-chat active days. This lets the Chats headline follow
+            //    30d / 12m / custom brushes exactly instead of remaining an
+            //    all-time number while the rest of the strip changes.
+            let chatSeries = try loadChatSeries(db: db, calendar: calendar)
+
             return DashboardAllTimeAggregate(
                 calendar: calendar,
                 dailyOverview: dailyOverview,
@@ -740,7 +758,8 @@ public enum DashboardLoader {
                 allTimeOldest: overview.oldest,
                 allTimeNewest: overview.newest,
                 contactSeries: contactSeries,
-                groupSeries: groupSeries
+                groupSeries: groupSeries,
+                chatSeries: chatSeries
             )
         }
     }
@@ -810,6 +829,56 @@ public enum DashboardLoader {
             ))
         }
         return out
+    }
+
+    /// Distinct active local-calendar days for every chat. The representation
+    /// is intentionally compact (`Int32` day indexes only): counting chats in
+    /// an arbitrary brush is then a binary-search per chat, with no SQL during
+    /// dragging and no per-message IDs retained in memory.
+    static func loadChatSeries(
+        db: Database,
+        calendar: Calendar
+    ) throws -> [ChatDailySeries] {
+        let sql = """
+            SELECT
+                cmj.chat_id AS chat_id,
+                date(
+                    CASE WHEN m.date > 1000000000000
+                         THEN m.date / 1000000000
+                         ELSE m.date
+                    END + 978307200,
+                    'unixepoch', 'localtime'
+                ) AS bucket_date
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            WHERE m.associated_message_type = 0
+            GROUP BY cmj.chat_id, bucket_date
+            HAVING bucket_date IS NOT NULL
+            ORDER BY cmj.chat_id, bucket_date
+            """
+
+        let rows = try Row.fetchAll(db, sql: sql)
+        let parser = DateFormatter()
+        parser.calendar = calendar
+        parser.timeZone = calendar.timeZone
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        let anchor = calendar.date(
+            from: DateComponents(year: 2001, month: 1, day: 1)
+        ) ?? Date(timeIntervalSinceReferenceDate: 0)
+
+        var byChat: [Int64: [Int32]] = [:]
+        for row in rows {
+            guard let chatID: Int64 = row["chat_id"],
+                  let bucket: String = row["bucket_date"],
+                  let date = parser.date(from: bucket) else { continue }
+            let components = calendar.dateComponents([.day], from: anchor, to: date)
+            byChat[chatID, default: []].append(Int32(components.day ?? 0))
+        }
+
+        return byChat.map { chatID, days in
+            ChatDailySeries(chatRowID: chatID, days: days)
+        }
     }
 
     /// Per-(handle, day) sent/received, restricted to 1:1 chats (style
@@ -1062,6 +1131,7 @@ public enum DashboardLoader {
                 displayName: label,
                 chatAvatarData: chatAvatar,
                 participantAvatars: participantAvatars,
+                participantHandles: info.map(\.handle),
                 days: days
             ))
         }

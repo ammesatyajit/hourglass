@@ -157,7 +157,7 @@ public struct SocialGraphPanel: View {
 
     public var body: some View {
         StatPanel(
-            title: "Your circles",
+            title: mode == .vocabulary ? "How words moved" : "Your circles",
             subtitle: subtitle,
             accessory: {
                 if viewModel.isLoading {
@@ -222,7 +222,7 @@ public struct SocialGraphPanel: View {
             if !hasVocabulary {
                 return "Finding the words you trade — this takes a couple of minutes on first open"
             }
-            return "The slang you traded — blue came in to you, orange spread out from you"
+            return "Choose a word to trace it, or choose a person to compare what each of you says"
         }
         if let result = viewModel.result {
             let circles = result.graph.communityCount
@@ -260,10 +260,10 @@ public struct SocialGraphPanel: View {
                         }
                     }
                 }
-                // The Vocabulary lens stacks a term cloud above the canvas, so
-                // it gets extra room — the graph itself stays as generous as the
-                // other modes' 460pt.
-                .frame(height: mode == .vocabulary ? 560 : 460)
+                // Vocabulary is a three-column workspace: words, graph, person.
+                // Give it vertical room so neither side rail has to turn back into
+                // a compressed horizontal strip.
+                .frame(height: mode == .vocabulary ? 600 : 460)
                 .frame(maxWidth: .infinity)
 
                 // The community legend names circles by their biggest member —
@@ -296,14 +296,16 @@ public struct SocialGraphPanel: View {
             if overlay.isEmpty {
                 vocabularyEmptyState
             } else {
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    // The term cloud — the click targets for the signature
-                    // light-up. Only terms that actually mapped onto a visible
-                    // node (i.e. have people to light up) are offered.
+                HStack(alignment: .top, spacing: Space.md) {
+                    // A stable vertical rail replaces the wrapping chip cloud.
+                    // Every traded term stays reachable, and actual corpus use
+                    // counts now determine both ordering and visual emphasis.
                     VocabTermCloud(
-                        terms: litUpTerms(vernacular: vern, overlay: overlay),
+                        terms: litUpTerms(overlay: overlay),
                         selected: $selectedVocabTerm
                     )
+                    .frame(width: 236)
+
                     VocabularyGraphCanvas(
                         result: result, overlay: overlay,
                         pinnedInfluence: pinnedInfluence,
@@ -322,13 +324,14 @@ public struct SocialGraphPanel: View {
     /// whose people all capped out of the graph isn't offered as a dead chip).
     /// Each carries its trade direction(s) for the chip's tint + a sort weight
     /// (how many people it touched) so the most-connected words lead.
-    private func litUpTerms(vernacular: VernacularGraph, overlay: VocabularyOverlay) -> [VocabCloudTerm] {
+    private func litUpTerms(overlay: VocabularyOverlay) -> [VocabCloudTerm] {
         var bySurface: [String: VocabCloudTerm] = [:]
         for trader in overlay.tradersByNodeID.values {
             if let inc = trader.incoming {
                 for flow in inc.terms {
                     var t = bySurface[flow.term] ?? VocabCloudTerm(term: flow.term)
                     t.gotCount += 1
+                    t.evidenceUses += flow.count
                     bySurface[flow.term] = t
                 }
             }
@@ -336,15 +339,43 @@ public struct SocialGraphPanel: View {
                 for flow in out.terms {
                     var t = bySurface[flow.term] ?? VocabCloudTerm(term: flow.term)
                     t.gaveCount += 1
+                    t.evidenceUses += flow.count
                     bySurface[flow.term] = t
                 }
             }
         }
-        // Most-connected first (people touched), then alphabetical for stability.
+
+        // The profile pass knows total corpus frequency and usage breadth. Merge
+        // those honest counts onto the already-qualified trade list; it does not
+        // add any new word or relax the transmission rules.
+        if let spreadProfile {
+            for profileTerm in spreadProfile.terms {
+                let candidateKeys = [
+                    profileTerm.selectionKey,
+                    profileTerm.surface,
+                    profileTerm.id.hasPrefix("spread:")
+                        ? String(profileTerm.id.dropFirst("spread:".count))
+                        : profileTerm.id
+                ]
+                guard let key = candidateKeys.first(where: { bySurface[$0] != nil }),
+                      var term = bySurface[key] else { continue }
+                term.totalUses = profileTerm.totalUses
+                // `breadth` counts contacts; the owner is known to use every
+                // profile term, so include them in the people total.
+                term.peopleUsing = profileTerm.breadth + 1
+                bySurface[key] = term
+            }
+        }
+
+        // Trade breadth leads; actual frequency breaks ties and is shown on every
+        // row. This preserves "moved between people" as the meaning of the list
+        // while stopping equally-shaped chips from hiding usage magnitude.
         return bySurface.values.sorted {
             $0.peopleTouched != $1.peopleTouched
                 ? $0.peopleTouched > $1.peopleTouched
-                : $0.term < $1.term
+                : ($0.useCount != $1.useCount
+                    ? $0.useCount > $1.useCount
+                    : $0.term < $1.term)
         }
     }
 
@@ -486,8 +517,15 @@ struct VocabCloudTerm: Identifiable, Equatable {
     let term: String                 // raw published label (may be "surface#sense")
     var gotCount: Int = 0            // # people you picked it up from (≤1 in practice)
     var gaveCount: Int = 0           // # people who took it from you
+    /// Sum of decisive early-use evidence, available on every graph edge.
+    var evidenceUses: Int = 0
+    /// Total uses across the analyzed corpus, when the profile pass supplies it.
+    var totalUses: Int = 0
+    /// Distinct people using it, including the owner, when available.
+    var peopleUsing: Int = 0
     var id: String { term }
     var peopleTouched: Int { gotCount + gaveCount }
+    var useCount: Int { max(totalUses, evidenceUses) }
 
     /// Direction tint — blue if you only caught it, orange if it only spread,
     /// purple if both. Mirrors the node tint policy so chip ↔ node read alike.
@@ -497,44 +535,39 @@ struct VocabCloudTerm: Identifiable, Equatable {
     }
 }
 
-/// A compact, tappable cloud of the words you traded. Tapping a chip lights that
-/// term's people up on the graph beside it (and tapping again clears). Stays
-/// spare at rest — shows the most-connected terms first and tucks the long tail
-/// behind a "more" toggle so it never crowds the graph.
+/// A vertical, tappable rail of the words you traded. Tapping a row lights that
+/// term's people up on the graph beside it (and tapping again clears). The rail
+/// scrolls independently, so the full list stays available without stealing
+/// height from the graph or becoming a long horizontal chip cloud.
 struct VocabTermCloud: View {
     let terms: [VocabCloudTerm]
     @Binding var selected: String?
 
-    @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Keep the resting state calm: a couple of rows' worth of the top terms,
-    /// the rest one tap away.
-    private let collapsedCount = 14
-
-    private var visible: [VocabCloudTerm] {
-        expanded ? terms : Array(terms.prefix(collapsedCount))
-    }
-    private var hiddenCount: Int { max(0, terms.count - collapsedCount) }
+    private var maxUseCount: Int { max(terms.map(\.useCount).max() ?? 1, 1) }
 
     var body: some View {
         if terms.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                HStack(spacing: Space.xs) {
-                    Image(systemName: "hand.tap.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Text("Tap a word to see who you traded it with")
-                        .font(.caption)
+            VStack(alignment: .leading, spacing: Space.sm) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Words you traded")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Ranked by reach, then how often everyone said them")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                FlowLayout(spacing: Space.xs, lineSpacing: Space.xs) {
-                    ForEach(visible) { term in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: Space.xs) {
+                        ForEach(terms) { term in
                         VocabCloudChip(
                             term: term,
+                            maxUseCount: maxUseCount,
                             isSelected: selected == term.term,
                             reduceMotion: reduceMotion
                         ) {
@@ -543,24 +576,20 @@ struct VocabTermCloud: View {
                             }
                         }
                     }
-                    if hiddenCount > 0 && !expanded {
-                        Button {
-                            withAnimation(reduceMotion ? nil : .bmDefault) { expanded = true }
-                        } label: {
-                            Text("+\(hiddenCount) more")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, Space.sm)
-                                .padding(.vertical, Space.xs)
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .background(Capsule().fill(Color.primary.opacity(0.05)))
-                        .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: 0.75))
                     }
                 }
+                .scrollIndicators(.visible)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Space.md)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                    .fill(Color.primary.opacity(0.025))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                    .strokeBorder(Color.hairline, lineWidth: 1)
+            )
         }
     }
 }
@@ -569,6 +598,7 @@ struct VocabTermCloud: View {
 /// by trade direction, lifted + filled when it's the lit term.
 private struct VocabCloudChip: View {
     let term: VocabCloudTerm
+    let maxUseCount: Int
     let isSelected: Bool
     let reduceMotion: Bool
     let action: () -> Void
@@ -580,29 +610,66 @@ private struct VocabCloudChip: View {
     private var fillOpacity: Double {
         isSelected ? 0.22 : (hovering ? 0.13 : 0.07)
     }
+    private var frequencyFraction: CGFloat {
+        guard term.useCount > 0, maxUseCount > 0 else { return 0 }
+        // Log scaling keeps one runaway word from flattening every other bar.
+        return CGFloat(log(Double(term.useCount) + 1) / log(Double(maxUseCount) + 1))
+    }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Text(surface)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium, design: .rounded))
-                    .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.xs) {
+                    Text(surface)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .medium, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("\(term.useCount.formatted())×")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(tint)
+                }
+                Text(directionSummary)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
+                GeometryReader { proxy in
+                    Capsule()
+                        .fill(tint.opacity(isSelected ? 0.72 : 0.40))
+                        .frame(width: max(8, proxy.size.width * frequencyFraction))
+                }
+                .frame(height: 3)
             }
-            .padding(.horizontal, Space.sm + 1)
-            .padding(.vertical, Space.xs + 1)
-            .contentShape(Capsule(style: .continuous))
+            .padding(.horizontal, Space.sm)
+            .padding(.vertical, Space.xs + 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
         }
         .buttonStyle(.plain)
-        .background(Capsule(style: .continuous).fill(tint.opacity(fillOpacity)))
+        .background(RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+            .fill(tint.opacity(fillOpacity)))
         .overlay(
-            Capsule(style: .continuous)
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
                 .strokeBorder(isSelected ? tint.opacity(0.55) : (hovering ? tint.opacity(0.30) : Color.hairline),
                               lineWidth: isSelected ? 1.25 : 1)
         )
         .onHover { inside in withAnimation(reduceMotion ? nil : .bmHover) { hovering = inside } }
-        .help("“\(surface)” — light up the people you traded it with")
-        .accessibilityLabel("\(surface), tap to light up who you traded it with")
+        .help("“\(surface)” — \(term.useCount) uses; \(directionSummary.lowercased())")
+        .accessibilityLabel("\(surface), \(term.useCount) uses, \(directionSummary)")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var directionSummary: String {
+        var parts: [String] = []
+        if term.gotCount > 0 {
+            parts.append(term.gotCount == 1 ? "came from 1 person" : "came from \(term.gotCount) people")
+        }
+        if term.gaveCount > 0 {
+            parts.append("spread to \(term.gaveCount)")
+        }
+        if parts.isEmpty, term.peopleUsing > 0 {
+            parts.append("used by \(term.peopleUsing) people")
+        }
+        return parts.joined(separator: " · ")
     }
 }

@@ -229,24 +229,21 @@ struct NLSearchBar: View {
         }
     }
 
-    /// First-run / not-ready prompt. The visual shell stays consistent
-    /// across the three download states (`idle`, `downloading`, `failed`);
-    /// the body content swaps in/out via `downloadBody`. We deliberately
-    /// keep the layout fixed so the bar doesn't jump as the state changes.
+    /// Bundled-runtime failure. There is no download state or setup CTA:
+    /// Needle2 ships inside the app and runs locally from the first query.
     private func firstRunPrompt(reason: String) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
-                Image(systemName: firstRunGlyph)
+                Image(systemName: "exclamationmark.triangle.fill")
                     .font(.title3)
-                    .foregroundStyle(accentTint)
-                Text(firstRunTitle)
+                    .foregroundStyle(.orange)
+                Text("AI Search unavailable")
                     .font(.headline)
             }
             Text(reason)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            downloadBody
         }
         .padding(Space.lg)
         .background(
@@ -257,130 +254,6 @@ struct NLSearchBar: View {
             RoundedRectangle(cornerRadius: Radius.large)
                 .strokeBorder(Color.hairline, lineWidth: 1)
         )
-    }
-
-    private var firstRunGlyph: String {
-        switch viewModel.downloadState {
-        case .downloading: return "arrow.down.circle.fill"
-        case .failed:      return "exclamationmark.triangle.fill"
-        case .ready, .idle: return "arrow.down.circle"
-        }
-    }
-
-    private var firstRunTitle: String {
-        switch viewModel.downloadState {
-        case .downloading: return "Downloading model"
-        case .failed:      return "Download failed"
-        default:           return "One-time setup needed"
-        }
-    }
-
-    @ViewBuilder
-    private var downloadBody: some View {
-        switch viewModel.downloadState {
-        case .idle, .ready:
-            // .ready with a non-nil reason means the runtime is initializing
-            // (the container hasn't been handed off yet). Render the same
-            // CTA as idle so the user has a path forward.
-            Text("Natural-language search uses a local AI model that runs on your Mac. After the one-time download we don't send anything over the internet. Approximately 1 GB.")
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: Space.sm) {
-                Button {
-                    viewModel.beginDownload()
-                } label: {
-                    Label("Download (1 GB)", systemImage: "arrow.down.circle.fill")
-                        .font(.callout.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accentTint)
-                Button("Use keyword search instead") {
-                    viewModel.dismissFirstRunPrompt()
-                }
-                .buttonStyle(.borderless)
-                .tint(.secondary)
-            }
-
-        case .downloading(let progress):
-            // Determinate progress when we know the total bytes; spinner
-            // otherwise (the manifest probe happens before the first chunk).
-            VStack(alignment: .leading, spacing: Space.xs) {
-                if progress.totalBytes > 0 {
-                    ProgressView(value: progress.fraction)
-                        .progressViewStyle(.linear)
-                        .tint(accentTint)
-                } else {
-                    HStack(spacing: Space.sm) {
-                        ProgressView().controlSize(.small)
-                        Text("Preparing download…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                HStack(spacing: Space.xs) {
-                    Text(progressCaption(for: progress))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Cancel") {
-                        viewModel.cancelDownload()
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-                    .tint(.secondary)
-                }
-            }
-            Button("Use keyword search instead") {
-                viewModel.dismissFirstRunPrompt()
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .tint(.secondary)
-
-        case .failed(let reason):
-            Text(reason)
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: Space.sm) {
-                Button {
-                    viewModel.retryDownload()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .font(.callout.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accentTint)
-                Button("Use keyword search instead") {
-                    viewModel.dismissFirstRunPrompt()
-                }
-                .buttonStyle(.borderless)
-                .tint(.secondary)
-            }
-        }
-    }
-
-    /// Format a "12 MB / 950 MB · 18 MB/s · ~52 s" caption for the
-    /// download progress row.
-    private func progressCaption(for progress: ModelDownloadProgress) -> String {
-        var parts: [String] = []
-        if progress.totalBytes > 0 {
-            let done = ModelDownloader.formatBytes(progress.bytesDownloaded)
-            let total = ModelDownloader.formatBytes(progress.totalBytes)
-            parts.append("\(done) / \(total)")
-        } else {
-            parts.append(ModelDownloader.formatBytes(progress.bytesDownloaded))
-        }
-        if progress.bytesPerSecond > 100_000 {
-            let mbps = progress.bytesPerSecond / 1_000_000
-            parts.append(String(format: "%.1f MB/s", mbps))
-        }
-        if let eta = progress.etaSeconds, eta > 0, eta < 24 * 3600 {
-            parts.append("ETA " + ModelDownloader.formatETA(eta))
-        }
-        return parts.joined(separator: " · ")
     }
 
     private func traceCard(steps: [NLTraceStep], isLive: Bool) -> some View {

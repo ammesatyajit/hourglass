@@ -28,7 +28,7 @@ struct NostalgiaPage: View {
         DashboardScrollPage(
             title: "Nostalgia",
             subtitle: "Memories, milestones & people you used to talk to",
-            accessory: { DashboardSearchPill(action: onSearchTap) },
+            onSearchTap: onSearchTap,
             content: { content }
         )
     }

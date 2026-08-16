@@ -5,7 +5,7 @@
 //  The "Overview" sidebar page: the quick-glance home. Hosts the content that
 //  used to live at the top of the single-scroll dashboard —
 //
-//    1. OverviewStatStrip      — all-time aggregate counters.
+//    1. OverviewStatStrip      — counters for the selected date range.
 //    2. Frequency panel        — the texting-frequency chart + timeline
 //                                navigator/brush.
 //    3. Leaderboards           — people you text the most | group chats, side
@@ -38,17 +38,16 @@ struct OverviewPage: View {
         DashboardScrollPage(
             title: "Overview",
             subtitle: spanLabel,
+            // The big centered search bar comes from the page chrome.
+            onSearchTap: onSearchTap,
             accessory: {
-                HStack(spacing: Space.md) {
-                    // The time-range selector lives on Overview because this is
-                    // the only page whose numbers + chart respond to it.
-                    WindowSelector(
-                        selection: $viewModel.window,
-                        customRangeActive: viewModel.brushedRange != nil
-                            && !viewModel.brushMatchesPreset
-                    )
-                    DashboardSearchPill(action: onSearchTap)
-                }
+                // The time-range selector lives on Overview because this is
+                // the only page whose numbers + chart respond to it.
+                WindowSelector(
+                    selection: $viewModel.window,
+                    customRangeActive: viewModel.brushedRange != nil
+                        && !viewModel.brushMatchesPreset
+                )
             },
             content: {
                 content
@@ -167,6 +166,32 @@ struct OverviewPage: View {
                 runSearch(SearchQueryBuilder.oneOnOne(name: entry.displayName))
             },
             actionTooltip: "Search every chat with this person",
+            shareMessage: { rank, _ in
+                LeaderboardShareCopy.message(
+                    rank: rank,
+                    kind: .person,
+                    timeframe: shareTimeframe
+                )
+            },
+            shareCardSpec: { rank, entry in
+                // Recipient-facing breakdown — "sent/received" only makes
+                // sense from the sharer's chair; the person reading the card
+                // needs whose messages were whose.
+                let detail = entry.secondaryPair.map {
+                    "\($0.left.formatted()) from me · \($0.right.formatted()) from you"
+                } ?? "\(entry.primary.formatted()) messages"
+                var photo: Data?
+                if case .person(let bytes) = entry.avatar { photo = bytes }
+                return LeaderboardShareCard.Spec(
+                    kind: .person,
+                    rank: rank,
+                    displayName: entry.displayName,
+                    detail: detail,
+                    timeframe: shareTimeframe,
+                    avatarData: photo,
+                    recipient: shareRecipient(for: entry)
+                )
+            },
             visibleRowCount: 8
         )
     }
@@ -193,6 +218,47 @@ struct OverviewPage: View {
                 runSearch(SearchQueryBuilder.anyChat(name: entry.displayName))
             },
             actionTooltip: "Search this group",
+            shareMessage: { rank, _ in
+                LeaderboardShareCopy.message(
+                    rank: rank,
+                    kind: .groupChat,
+                    timeframe: shareTimeframe
+                )
+            },
+            shareCardSpec: { rank, entry in
+                // Group ranks by MY sent count — say so, plus the group's
+                // total, instead of one ambiguous number.
+                let group = stats.topGroups.first { "group:\($0.chatRowID)" == entry.id }
+                let detail = group.map {
+                    "\($0.sentByYou.formatted()) from me · \($0.total.formatted()) total"
+                } ?? "\(entry.primary.formatted()) from me"
+                var photo: Data?
+                var composite: [Data?] = []
+                switch entry.avatar {
+                case .groupPhoto(let bytes): photo = bytes
+                case .groupComposite(let participants): composite = participants
+                default: break
+                }
+                // Pre-address the whole group: composing to the full
+                // participant set routes to the existing thread in Messages.
+                let recipient: LeaderboardShareCard.Recipient? = group.flatMap {
+                    $0.participantHandles.isEmpty ? nil : .init(
+                        name: entry.displayName,
+                        handles: $0.participantHandles,
+                        avatarData: photo
+                    )
+                }
+                return LeaderboardShareCard.Spec(
+                    kind: .groupChat,
+                    rank: rank,
+                    displayName: entry.displayName,
+                    detail: detail,
+                    timeframe: shareTimeframe,
+                    avatarData: photo,
+                    compositeAvatars: composite,
+                    recipient: recipient
+                )
+            },
             visibleRowCount: 8
         )
     }
@@ -207,20 +273,24 @@ struct OverviewPage: View {
     // MARK: - Subtitle copy (verbatim from the prior DashboardView)
 
     private var spanLabel: String? {
-        if let brushed = viewModel.brushedRange {
+        // `activeRange` falls back to the selected preset before the
+        // all-time aggregate has loaded. Using only `brushedRange` here made
+        // the cold-launch header say "All time" while the selector said 30d.
+        if let visibleRange = viewModel.activeRange {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
             formatter.timeStyle = .none
-            let lo = formatter.string(from: brushed.lowerBound)
-            let hi = formatter.string(from: brushed.upperBound)
+            let lo = formatter.string(from: visibleRange.lowerBound)
+            let hi = formatter.string(from: visibleRange.upperBound)
             let days = max(
                 1,
                 Calendar.current.dateComponents(
-                    [.day], from: brushed.lowerBound, to: brushed.upperBound
+                    [.day], from: visibleRange.lowerBound, to: visibleRange.upperBound
                 ).day ?? 0
             )
             let suffix = "\(lo) → \(hi) · \(days) day\(days == 1 ? "" : "s")"
-            return viewModel.brushMatchesPreset ? suffix : "Custom: \(suffix)"
+            let isCustom = viewModel.brushedRange != nil && !viewModel.brushMatchesPreset
+            return isCustom ? "Custom: \(suffix)" : suffix
         }
         guard let stats = viewModel.stats,
               let oldest = stats.overview.oldest,
@@ -305,5 +375,45 @@ struct OverviewPage: View {
         if viewModel.brushedRange == nil { return viewModel.window.label }
         if viewModel.brushMatchesPreset { return viewModel.window.label }
         return "Custom"
+    }
+
+    /// Best Messages handle for a person row, so the share picker can lead
+    /// with "Message <name>". Handle-keyed rows carry their own address in
+    /// the entry id; name-keyed rows reverse-map through ResolvedContacts.
+    /// Phone numbers win over emails (more likely to be the live iMessage
+    /// address); nil (no reachable handle, or a group) drops the entry.
+    private func shareRecipient(for entry: TopListEntry) -> LeaderboardShareCard.Recipient? {
+        var photo: Data?
+        if case .person(let bytes) = entry.avatar { photo = bytes }
+        if entry.id.hasPrefix("handle:") {
+            let handle = String(entry.id.dropFirst("handle:".count))
+            return handle.isEmpty
+                ? nil
+                : .init(name: entry.displayName, handles: [handle], avatarData: photo)
+        }
+        guard let contacts = viewModel.contacts else { return nil }
+        let handles = contacts.byHandle
+            .filter { $0.value.displayName == entry.displayName }
+            .map(\.key.normalized)
+            .sorted()
+        let phone = handles.first { $0.hasPrefix("+") || $0.first?.isNumber == true }
+        guard let best = phone ?? handles.first else { return nil }
+        return .init(name: entry.displayName, handles: [best], avatarData: photo)
+    }
+
+    private var shareTimeframe: String {
+        if let range = viewModel.activeRange,
+           viewModel.brushedRange != nil,
+           !viewModel.brushMatchesPreset {
+            let formatter = DateIntervalFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            return formatter.string(from: range.lowerBound, to: range.upperBound)
+        }
+        switch viewModel.window {
+        case .last30Days: return "the last 30 days"
+        case .last12Months: return "the last 12 months"
+        case .allTime: return "all time"
+        }
     }
 }

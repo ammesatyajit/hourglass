@@ -14,7 +14,7 @@
 //        – ORANGE= `.youGaveThem`  (slang that spread FROM you), arrow → them
 //      Edge thickness scales with the number of terms traded.
 //    • People you never traded vocab with are dimmed to faint context dots.
-//    • Selecting a trader opens a detail strip listing the FULL term list for
+//    • Selecting a trader opens a right-side inspector listing the FULL term list for
 //      that relationship (each `VernacularGraph.Edge` carries the complete
 //      `[TermFlow]` — we show ALL of them, with direction + example), grouped
 //      incoming/outgoing.
@@ -314,18 +314,19 @@ struct VocabularyGraphCanvas: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            legend
-            let transform = ScreenTransform(
-                layout: layout, canvas: canvasSize, zoom: zoom, pan: pan
-            )
-            ZStack {
-                Canvas { ctx, size in
-                    guard canvasSize != .zero else { return }
-                    drawComembership(ctx: ctx, transform: transform)
-                    drawTradeEdges(ctx: ctx, transform: transform)
-                    drawNodes(ctx: ctx, transform: transform, size: size)
-                }
+        HStack(alignment: .top, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                legend
+                let transform = ScreenTransform(
+                    layout: layout, canvas: canvasSize, zoom: zoom, pan: pan
+                )
+                ZStack {
+                    Canvas { ctx, size in
+                        guard canvasSize != .zero else { return }
+                        drawComembership(ctx: ctx, transform: transform)
+                        drawTradeEdges(ctx: ctx, transform: transform)
+                        drawNodes(ctx: ctx, transform: transform, size: size)
+                    }
                     .contentShape(Rectangle())
 
                     labelOverlay(transform: transform)
@@ -361,13 +362,9 @@ struct VocabularyGraphCanvas: View {
                 )
                 .onTapGesture { location in
                     // ANYONE with enough history is tappable — not just the
-                    // traders/term-lit nodes. The per-person panel builds their
-                    // vernacular lazily, so tapping a never-traded friend still
-                    // shows their idiolect + reclaimed words (the detail region
-                    // already renders a loading panel → VocabPersonPanel for
-                    // non-traders). "Enough history" = a real 1:1 thread or at
-                    // least one shared group; below that there's no profile to
-                    // show, so the tap clears, same as empty space.
+                    // traders/term-lit nodes. The per-person inspector builds
+                    // their vernacular lazily. "Enough history" = a real 1:1
+                    // thread or at least one shared group.
                     if let hit = nearestNode(to: location, transform: transform),
                        !hit.isMe,
                        overlay.tradersByNodeID[hit.id] != nil
@@ -376,9 +373,8 @@ struct VocabularyGraphCanvas: View {
                            || hit.sharedGroupCount >= 1 {
                         let willPin = pinnedID != hit.id
                         withAnimation(reduceMotion ? nil : .bmGlassMorph) {
-                            // Tapping a person resumes the per-person lens — the
-                            // two-way link: a term lights people, a person shows
-                            // their terms. Clear any lit term so they don't fight.
+                            // A person selection and a word trace are mutually
+                            // exclusive, keeping the center graph unambiguous.
                             selectedTerm = nil
                             pinnedID = willPin ? hit.id : nil
                         }
@@ -393,8 +389,6 @@ struct VocabularyGraphCanvas: View {
                         }
                     }
                 }
-                // The light-up brightens/grows on a calm spring when the term
-                // changes; reduce-motion gets an instant swap.
                 .animation(reduceMotion ? nil : .bmGlassMorph, value: selectedTerm)
                 .overlay(alignment: .topLeading) { termBanner }
                 .overlay(alignment: .bottomTrailing) { zoomControls }
@@ -402,16 +396,18 @@ struct VocabularyGraphCanvas: View {
                 .onGeometryChange(for: CGSize.self) { proxy in proxy.size } action: { newSize in
                     if canvasSize != newSize { canvasSize = newSize }
                 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
 
-            // The detail strip lives in a FIXED-HEIGHT region so the canvas's
-            // available height never changes when a trader is selected (or
-            // hover changes). Previously this strip grew/shrank inside the same
-            // fixed-height VStack, which shrank the GeometryReader above and
-            // made the fit-to-box transform re-fit — the "weird zoom-out on
-            // hover". A stable reserved area keeps the graph rock-steady; the
-            // strip scrolls internally if a trader has a very long term list.
+            // Person details now use the otherwise-empty right side instead of
+            // compressing every section into a 128pt strip below the graph.
             detailRegion
-                .frame(height: detailRegionHeight)
+                .frame(width: 310)
+                .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .onChange(of: selectedTerm) { _, term in
+            if term != nil { pinnedID = nil }
         }
     }
 
@@ -703,31 +699,25 @@ struct VocabularyGraphCanvas: View {
 
     private func traderSummary(_ t: VocabTrader) -> String {
         var parts: [String] = []
-        if t.incomingCount > 0 { parts.append("\(t.incomingCount) in") }
-        if t.outgoingCount > 0 { parts.append("\(t.outgoingCount) out") }
-        return parts.joined(separator: " · ") + " · tap for words"
+        let first = t.displayName.split(separator: " ").first.map(String.init) ?? t.displayName
+        if t.incomingCount > 0 { parts.append("\(t.incomingCount) from \(first)") }
+        if t.outgoingCount > 0 { parts.append("\(t.outgoingCount) from you") }
+        return parts.joined(separator: " · ") + " · click for details"
     }
 
-    // MARK: - Detail region (selected trader's FULL term list)
+    // MARK: - Right-side inspector (selected person's FULL term list)
 
-    /// Fixed height for the detail region, so selecting/clearing a trader (or
-    /// hovering) never changes the canvas's available height — the single cause
-    /// of the old hover-zoom. The selected trader's full term list scrolls
-    /// inside this box when it's taller than the reservation.
-    private var detailRegionHeight: CGFloat { 128 }
-
-    /// The detail region is driven by `pinnedID` ONLY (an explicit TAP) — hover
-    /// just highlights + floats the tooltip label, it does NOT open this strip,
-    /// so hovering can never resize the canvas. Selecting a trader shows ALL of
-    /// that relationship's terms (incoming + outgoing), scrollable.
+    /// Driven by `pinnedID` ONLY (an explicit click). Hover just highlights the
+    /// graph. The fixed-width inspector keeps graph geometry stable while its
+    /// vertical scroll finally leaves enough room for both people's word lists.
     @ViewBuilder
     private var detailRegion: some View {
         if let id = pinnedID {
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical) {
                 if let trader = overlay.tradersByNodeID[id],
                    let influence = pinnedInfluence,
                    influence.person.caseInsensitiveCompare(trader.displayName) == .orderedSame {
-                    VocabPersonPanel(influence: influence)
+                    VocabPersonPanel(influence: influence, trader: trader)
                 } else if let trader = overlay.tradersByNodeID[id] {
                     // The quick trade data renders immediately; the person's
                     // full vocabulary profile is still building. Say so —
@@ -745,22 +735,30 @@ struct VocabularyGraphCanvas: View {
                 } else if let name = node(id)?.displayName,
                           let influence = pinnedInfluence,
                           influence.person.caseInsensitiveCompare(name) == .orderedSame {
-                    VocabPersonPanel(influence: influence)
+                    VocabPersonPanel(influence: influence, trader: nil)
                 } else {
                     VocabPersonLoadingPanel(name: node(id)?.displayName ?? "Person")
                 }
             }
+            .scrollIndicators(.visible)
             .transition(reduceMotion ? .opacity
                         : .asymmetric(insertion: .opacity, removal: .opacity))
         } else {
-            HStack(spacing: Space.xs) {
-                Image(systemName: "hand.tap").font(.caption2)
-                Text("Tap anyone to see their vernacular — and every word that travelled between you.")
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Label("Person details", systemImage: "person.text.rectangle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text("Choose someone in the graph to compare the words they use with the words that moved between you.")
                     .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(.secondary)
+            .padding(Space.md)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.top, Space.xs)
+            .background(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                .fill(Color.primary.opacity(0.025)))
+            .overlay(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
+                .strokeBorder(Color.hairline, lineWidth: 1))
         }
     }
 
@@ -769,9 +767,9 @@ struct VocabularyGraphCanvas: View {
     private var legend: some View {
         HStack(spacing: Space.md) {
             VocabLegendSwatch(color: VocabPalette.incoming, glyph: "arrow.down.left",
-                              text: "you picked up")
+                              text: "they used it before you")
             VocabLegendSwatch(color: VocabPalette.outgoing, glyph: "arrow.up.right",
-                              text: "spread from you")
+                              text: "you used it before them")
             Spacer(minLength: 0)
         }
         .font(.caption2)
@@ -952,12 +950,16 @@ private struct VocabTraderDetail: View {
     private var summaryLine: String {
         var parts: [String] = []
         if trader.incomingCount > 0 {
-            parts.append("\(trader.incomingCount) word\(trader.incomingCount == 1 ? "" : "s") you picked up")
+            parts.append("\(trader.incomingCount) from \(shortName)")
         }
         if trader.outgoingCount > 0 {
-            parts.append("\(trader.outgoingCount) that spread from you")
+            parts.append("\(trader.outgoingCount) from you")
         }
         return parts.joined(separator: "  ·  ")
+    }
+
+    private var shortName: String {
+        trader.displayName.split(separator: " ").first.map(String.init) ?? trader.displayName
     }
 
     private var initials: String {
@@ -997,32 +999,60 @@ private struct VocabPersonLoadingPanel: View {
 /// loading; this view is only the richer replacement data strip.
 private struct VocabPersonPanel: View {
     let influence: PersonInfluence
+    /// The graph edge is the exact result shown while the richer person profile
+    /// loads. Keep it as an input so those rows cannot disappear at handoff.
+    let trader: VocabTrader?
+
+    @State private var showsAllWords = false
+    private let compactLimit = 10
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             header
-            if !theirReclaimed.isEmpty {
-                refBlock(title: "\(shortName)'s words", color: .yellow,
-                         refs: Array(theirReclaimed.prefix(10)))
-            }
-            if !theirWords.isEmpty {
-                refBlock(title: "\(shortName)'s expressions", color: .secondary,
-                         refs: Array(theirWords.prefix(10)))
-            }
-            if !influence.theyToYou.isEmpty {
-                influenceBlock(title: "\(shortName) → you", glyph: "arrow.down.left",
-                               color: VocabPalette.incoming,
-                               terms: Array(influence.theyToYou.prefix(8)))
-            }
-            if !influence.youToThem.isEmpty {
-                influenceBlock(title: "you → \(shortName)", glyph: "arrow.up.right",
-                               color: VocabPalette.outgoing,
-                               terms: Array(influence.youToThem.prefix(8)))
-            }
-            if !influence.independentCoUse.isEmpty {
-                influenceBlock(title: "both use", glyph: "circle.lefthalf.filled",
-                               color: .secondary,
-                               terms: Array(influence.independentCoUse.prefix(6)))
+
+            if wordRows.isEmpty {
+                Text("No strong word patterns yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, Space.sm)
+            } else {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Word map")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: Space.xs)
+                        Text("traded first · strongest first")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    ForEach(visibleRows) { row in
+                        PersonWordRowView(
+                            row: row,
+                            shortName: shortName,
+                            maximumStrength: maximumStrength
+                        )
+                    }
+
+                    if hiddenWordCount > 0 || showsAllWords {
+                        Button {
+                            withAnimation(.bmDefault) { showsAllWords.toggle() }
+                        } label: {
+                            HStack(spacing: Space.xs) {
+                                Image(systemName: showsAllWords ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8, weight: .bold))
+                                Text(showsAllWords ? "Show top \(compactLimit)" : "Show \(hiddenWordCount) more")
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Space.xs)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
         .padding(Space.md)
@@ -1044,96 +1074,164 @@ private struct VocabPersonPanel: View {
                 Text(influence.person)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text(summary)
+                Text(headerSummary)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func refBlock(title: String, color: Color, refs: [ProfileTermRef]) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(color)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: Space.xs)],
-                      alignment: .leading, spacing: Space.xs) {
-                ForEach(refs) { ref in
-                    Text(ref.surface)
-                        .font(.system(size: 10, weight: ref.kind == .reclaimed ? .semibold : .medium))
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(color.opacity(ref.kind == .reclaimed ? 0.16 : 0.09)))
-                        .foregroundStyle(.primary)
-                        .help(ref.example ?? "\(ref.count)x")
-                }
-            }
-        }
+    private var visibleRows: [PersonWordRow] {
+        showsAllWords ? wordRows : Array(wordRows.prefix(compactLimit))
     }
 
-    private func influenceBlock(
-        title: String,
-        glyph: String,
-        color: Color,
-        terms: [InfluencedTerm]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            HStack(spacing: Space.xs) {
-                Image(systemName: glyph).font(.system(size: 9, weight: .bold))
-                Text(title).font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(color)
-
-            ForEach(terms) { term in
-                HStack(alignment: .firstTextBaseline, spacing: Space.xs) {
-                    Text("“\(term.displaySurface)”")
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                    Text("×\(term.headstart)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    if let lag = term.lagDays {
-                        Text("\(abs(lag))d")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
-                    if let example = term.example, !example.isEmpty {
-                        Text("“\(example)”")
-                            .font(.system(size: 9))
-                            .italic()
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .padding(.horizontal, Space.sm)
-                .padding(.vertical, 3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
-                    .fill(color.opacity(0.06)))
-            }
-        }
+    private var hiddenWordCount: Int {
+        showsAllWords ? 0 : max(0, wordRows.count - compactLimit)
     }
 
-    private var summary: String {
-        let a = influence.theyToYou.count
-        let b = influence.youToThem.count
-        let c = influence.independentCoUse.count
+    private var maximumStrength: Int {
+        max(wordRows.map(\.strength).max() ?? 1, 1)
+    }
+
+    private var headerSummary: String {
+        guard let trader else { return "\(wordRows.count) words" }
         var parts: [String] = []
-        if a > 0 { parts.append("\(a) in") }
-        if b > 0 { parts.append("\(b) out") }
-        if c > 0 { parts.append("\(c) shared") }
-        if parts.isEmpty { parts.append("profile terms") }
+        if trader.incomingCount > 0 {
+            parts.append("\(trader.incomingCount) from \(shortName)")
+        }
+        if trader.outgoingCount > 0 {
+            parts.append("\(trader.outgoingCount) from you")
+        }
         return parts.joined(separator: " · ")
     }
 
-    private var theirReclaimed: [ProfileTermRef] {
-        influence.theirIdiolect.filter { $0.kind == .reclaimed }
+    /// One deduplicated list replaces four stacked category lists. A term that is
+    /// both part of the person's idiolect and part of a detected exchange appears
+    /// once; the exchange relationship wins the badge and keeps its earlier-use
+    /// evidence, while the person's total-use count remains available for terms
+    /// that are only part of their broader vocabulary.
+    private var wordRows: [PersonWordRow] {
+        var bySurface: [String: PersonWordRow] = [:]
+
+        for ref in influence.theirIdiolect {
+            let key = normalized(ref.surface)
+            guard !key.isEmpty else { continue }
+            if var existing = bySurface[key] {
+                existing.personUses = max(existing.personUses ?? 0, ref.count)
+                existing.strength = max(existing.strength, ref.count)
+                existing.example = existing.example ?? ref.example
+                existing.isReclaimed = existing.isReclaimed || ref.kind == .reclaimed
+                bySurface[key] = existing
+            } else {
+                bySurface[key] = PersonWordRow(
+                    id: key,
+                    surface: ref.surface,
+                    relationship: .theirs,
+                    strength: ref.count,
+                    personUses: ref.count,
+                    earlierUses: nil,
+                    lagDays: nil,
+                    example: ref.example,
+                    senseTag: nil,
+                    isReclaimed: ref.kind == .reclaimed
+                )
+            }
+        }
+
+        merge(influence.independentCoUse, as: .shared, into: &bySurface)
+        merge(influence.theyToYou, as: .fromThem, into: &bySurface)
+        merge(influence.youToThem, as: .fromYou, into: &bySurface)
+
+        // `PersonInfluence` is a wider, independently-ranked analysis. Merge the
+        // exact graph terms shown in VocabTraderDetail last so the completed
+        // panel is a true superset of its loading state rather than a replacement.
+        merge(trader?.incoming, as: .fromThem, into: &bySurface)
+        merge(trader?.outgoing, as: .fromYou, into: &bySurface)
+
+        return bySurface.values.sorted {
+            if $0.relationship.isTraded != $1.relationship.isTraded {
+                return $0.relationship.isTraded
+            }
+            if $0.strength != $1.strength { return $0.strength > $1.strength }
+            if $0.relationship.sortPriority != $1.relationship.sortPriority {
+                return $0.relationship.sortPriority < $1.relationship.sortPriority
+            }
+            return $0.surface.localizedCaseInsensitiveCompare($1.surface) == .orderedAscending
+        }
     }
 
-    private var theirWords: [ProfileTermRef] {
-        influence.theirIdiolect.filter { $0.kind == .word }
+    private func merge(
+        _ terms: [InfluencedTerm],
+        as relationship: PersonWordRelationship,
+        into rows: inout [String: PersonWordRow]
+    ) {
+        for term in terms {
+            let key = normalized(term.surface)
+            guard !key.isEmpty else { continue }
+            if var existing = rows[key] {
+                existing.relationship = relationship
+                existing.earlierUses = max(existing.earlierUses ?? 0, term.headstart)
+                existing.strength = existing.earlierUses ?? term.headstart
+                existing.lagDays = existing.lagDays ?? term.lagDays
+                existing.example = existing.example ?? term.example
+                existing.senseTag = existing.senseTag ?? term.senseTag
+                rows[key] = existing
+            } else {
+                rows[key] = PersonWordRow(
+                    id: key,
+                    surface: term.surface,
+                    relationship: relationship,
+                    strength: term.headstart,
+                    personUses: nil,
+                    earlierUses: term.headstart,
+                    lagDays: term.lagDays,
+                    example: term.example,
+                    senseTag: term.senseTag,
+                    isReclaimed: false
+                )
+            }
+        }
+    }
+
+    private func merge(
+        _ edge: VernacularGraph.Edge?,
+        as relationship: PersonWordRelationship,
+        into rows: inout [String: PersonWordRow]
+    ) {
+        guard let edge else { return }
+        for term in edge.terms {
+            let isVocative = term.term.hasPrefix("voc:")
+            let surface = isVocative ? String(term.term.dropFirst(4)) : term.term
+            let key = normalized(surface)
+            guard !key.isEmpty else { continue }
+            let lagDays = Int(abs(term.yourFirstUse.timeIntervalSince(term.theirFirstUse)) / 86_400)
+            if var existing = rows[key] {
+                existing.relationship = relationship
+                existing.earlierUses = max(existing.earlierUses ?? 0, term.count)
+                existing.strength = existing.earlierUses ?? term.count
+                existing.lagDays = existing.lagDays ?? lagDays
+                existing.example = term.example ?? existing.example
+                if isVocative { existing.senseTag = "as address" }
+                rows[key] = existing
+            } else {
+                rows[key] = PersonWordRow(
+                    id: key,
+                    surface: surface,
+                    relationship: relationship,
+                    strength: term.count,
+                    personUses: nil,
+                    earlierUses: term.count,
+                    lagDays: lagDays,
+                    example: term.example,
+                    senseTag: isVocative ? "as address" : nil,
+                    isReclaimed: false
+                )
+            }
+        }
+    }
+
+    private func normalized(_ surface: String) -> String {
+        surface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private var shortName: String {
@@ -1145,6 +1243,133 @@ private struct VocabPersonPanel: View {
         let first = comps.first?.first.map(String.init) ?? ""
         let last = comps.count > 1 ? comps.last?.first.map(String.init) ?? "" : ""
         return (first + last).uppercased()
+    }
+}
+
+private enum PersonWordRelationship: Int, Equatable {
+    case fromThem
+    case fromYou
+    case shared
+    case theirs
+
+    var sortPriority: Int { rawValue }
+    var isTraded: Bool { self != .theirs }
+
+    var color: Color {
+        switch self {
+        case .fromThem: return VocabPalette.incoming
+        case .fromYou: return VocabPalette.outgoing
+        case .shared: return .secondary
+        case .theirs: return .yellow
+        }
+    }
+
+    var glyph: String {
+        switch self {
+        case .fromThem: return "arrow.down.left"
+        case .fromYou: return "arrow.up.right"
+        case .shared: return "circle.lefthalf.filled"
+        case .theirs: return "person.fill"
+        }
+    }
+
+    func label(shortName: String) -> String {
+        switch self {
+        case .fromThem: return "from \(shortName)"
+        case .fromYou: return "from you"
+        case .shared: return "both"
+        case .theirs: return "\(shortName)'s"
+        }
+    }
+}
+
+private struct PersonWordRow: Identifiable {
+    let id: String
+    let surface: String
+    var relationship: PersonWordRelationship
+    var strength: Int
+    var personUses: Int?
+    var earlierUses: Int?
+    var lagDays: Int?
+    var example: String?
+    var senseTag: String?
+    var isReclaimed: Bool
+}
+
+private struct PersonWordRowView: View {
+    let row: PersonWordRow
+    let shortName: String
+    let maximumStrength: Int
+
+    private var tint: Color { row.relationship.color }
+    private var frequencyFraction: CGFloat {
+        guard row.strength > 0, maximumStrength > 0 else { return 0 }
+        return CGFloat(log(Double(row.strength) + 1) / log(Double(maximumStrength) + 1))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.xs) {
+                Text(row.surface)
+                    .font(.system(size: 11, weight: row.isReclaimed ? .semibold : .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let senseTag = row.senseTag, !senseTag.isEmpty {
+                    Text(senseTag)
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(tint.opacity(0.13)))
+                }
+                Spacer(minLength: 4)
+                Text(countLabel)
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(tint)
+            }
+
+            HStack(spacing: 4) {
+                Image(systemName: row.relationship.glyph)
+                    .font(.system(size: 8, weight: .bold))
+                Text(row.relationship.label(shortName: shortName))
+                    .font(.system(size: 9, weight: .medium))
+                if let lag = row.lagDays, row.relationship == .fromThem || row.relationship == .fromYou {
+                    Text("· \(abs(lag))d lead")
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .foregroundStyle(tint)
+
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(tint.opacity(0.42))
+                    .frame(width: max(6, proxy.size.width * frequencyFraction))
+            }
+            .frame(height: 2)
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+            .fill(tint.opacity(0.055)))
+        .help(helpText)
+    }
+
+    private var countLabel: String {
+        if row.relationship == .shared, let earlierUses = row.earlierUses {
+            return "≥\(earlierUses) each"
+        }
+        if row.relationship.isTraded, let earlierUses = row.earlierUses {
+            return "\(earlierUses) earlier"
+        }
+        if let personUses = row.personUses { return "\(personUses.formatted()) uses" }
+        return "\(row.strength.formatted()) uses"
+    }
+
+    private var helpText: String {
+        var parts = [row.relationship.label(shortName: shortName), countLabel]
+        if let example = row.example, !example.isEmpty { parts.append("“\(example)”") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -1243,7 +1468,7 @@ private struct VocabTermRow: View {
     }
 
     private var countLabel: String {
-        "×\(term.count) before \(isIncoming ? "you" : personName)"
+        "\(term.count) earlier uses"
     }
 
     private var dateLabel: String {

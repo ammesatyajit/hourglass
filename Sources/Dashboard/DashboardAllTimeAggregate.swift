@@ -21,6 +21,8 @@
 //      group's display name, photo bytes, and participant-avatar
 //      feedstock so recompute is a pure-Swift roll-up — no second SQL
 //      hit for label / avatar enrichment.
+//    - `chatSeries` — compact per-chat active-day indexes used to make the
+//      Chats headline obey the selected range without querying while dragging.
 //
 //  Memory math (worst case, on the user's 525k-message DB):
 //    - Each per-day count is 3 ints (~24 B). Total cells ≤ message-count.
@@ -88,6 +90,9 @@ public struct GroupDailySeries: Sendable {
     public let displayName: String
     public let chatAvatarData: Data?
     public let participantAvatars: [Data?]
+    /// Raw participant handles, carried through so range recomputes can
+    /// build share-addressable GroupStats without a DB trip.
+    public let participantHandles: [String]
     public let days: [DailyCount]
 
     public init(
@@ -95,12 +100,28 @@ public struct GroupDailySeries: Sendable {
         displayName: String,
         chatAvatarData: Data?,
         participantAvatars: [Data?],
+        participantHandles: [String] = [],
         days: [DailyCount]
     ) {
         self.chatRowID = chatRowID
         self.displayName = displayName
         self.chatAvatarData = chatAvatarData
         self.participantAvatars = participantAvatars
+        self.participantHandles = participantHandles
+        self.days = days
+    }
+}
+
+/// The local-calendar days on which one chat had at least one real message.
+/// Unlike contact/group ranking series, this keeps the raw chat identity so
+/// the Overview "Chats" count can follow any selected date range exactly.
+public struct ChatDailySeries: Sendable {
+    public let chatRowID: Int64
+    /// Unique day indexes in ascending order.
+    public let days: [Int32]
+
+    public init(chatRowID: Int64, days: [Int32]) {
+        self.chatRowID = chatRowID
         self.days = days
     }
 }
@@ -126,10 +147,8 @@ public struct DashboardAllTimeAggregate: Sendable {
     /// `dayIndex` ascending.
     public let dailyOverview: [DailyCount]
     /// Total distinct chats ever participated in (= the all-time
-    /// overview's `chats` field). Stable across brush ranges — the
-    /// recompute reuses this since per-window chat-counts would
-    /// require a per-day chat-set, which is expensive and not what the
-    /// "Conversations" tile is meant to convey.
+    /// overview's `chats` field). Preserved for the unbounded snapshot;
+    /// bounded ranges are counted from `chatSeries` below.
     public let allTimeChats: Int
     /// Oldest + newest message timestamps (all-time).
     public let allTimeOldest: Date?
@@ -137,6 +156,7 @@ public struct DashboardAllTimeAggregate: Sendable {
 
     public let contactSeries: [ContactDailySeries]
     public let groupSeries: [GroupDailySeries]
+    public let chatSeries: [ChatDailySeries]
 
     public init(
         calendar: Calendar,
@@ -145,7 +165,8 @@ public struct DashboardAllTimeAggregate: Sendable {
         allTimeOldest: Date?,
         allTimeNewest: Date?,
         contactSeries: [ContactDailySeries],
-        groupSeries: [GroupDailySeries]
+        groupSeries: [GroupDailySeries],
+        chatSeries: [ChatDailySeries] = []
     ) {
         self.calendar = calendar
         self.dailyOverview = dailyOverview
@@ -154,6 +175,7 @@ public struct DashboardAllTimeAggregate: Sendable {
         self.allTimeNewest = allTimeNewest
         self.contactSeries = contactSeries
         self.groupSeries = groupSeries
+        self.chatSeries = chatSeries
     }
 
     // MARK: - Day-index conversions
@@ -271,14 +293,23 @@ public struct DashboardAllTimeAggregate: Sendable {
         }
         let total = sent + received
 
-        // Conversations: keep the all-time number (see docstring on
-        // `allTimeChats`). Cheaper, and the "Conversations" tile
-        // semantically reads as "ever".
+        // Conversations follow the same active range as every other headline
+        // number. The compact per-chat day lists make this exact without SQL
+        // during a brush. Hand-built/legacy aggregates without chatSeries keep
+        // the prior all-time fallback rather than falsely reporting zero.
+        let chatCount: Int
+        if range == nil || chatSeries.isEmpty {
+            chatCount = allTimeChats
+        } else {
+            chatCount = chatSeries.reduce(into: 0) { count, series in
+                if hasDay(in: series.days, lo: loIdx, hi: hiIdx) { count += 1 }
+            }
+        }
         let overview = DashboardStats.OverviewCounters(
             total: total,
             sent: sent,
             received: received,
-            chats: allTimeChats,
+            chats: chatCount,
             oldest: allTimeOldest,
             newest: allTimeNewest
         )
@@ -341,7 +372,8 @@ public struct DashboardAllTimeAggregate: Sendable {
                 sentByYou: s,
                 total: t,
                 chatAvatarData: series.chatAvatarData,
-                participantAvatars: series.participantAvatars
+                participantAvatars: series.participantAvatars,
+                participantHandles: series.participantHandles
             ))
         }
         groupStats.sort { (lhs, rhs) in
@@ -358,6 +390,22 @@ public struct DashboardAllTimeAggregate: Sendable {
             topContacts: contactStats,
             topGroups: groupStats
         )
+    }
+
+    /// Whether a sorted day-index list intersects `[lo, hi]`.
+    @inline(__always)
+    private func hasDay(in days: [Int32], lo: Int32, hi: Int32) -> Bool {
+        var low = 0
+        var high = days.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if days[mid] < lo {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low < days.count && days[low] <= hi
     }
 
     /// Binary-search lower + upper bounds into a sorted DailyCount array,

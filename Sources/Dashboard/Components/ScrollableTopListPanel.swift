@@ -48,6 +48,10 @@ struct ScrollableTopListPanel: View {
     let emptyMessage: String
     var onSelect: ((TopListEntry) -> Void)? = nil
     var actionTooltip: String? = nil
+    var shareMessage: ((_ rank: Int, _ entry: TopListEntry) -> String)? = nil
+    /// Forwarded to `TopList` — when present, shares a rendered card image
+    /// alongside the text instead of text alone.
+    var shareCardSpec: ((_ rank: Int, _ entry: TopListEntry) -> LeaderboardShareCard.Spec)? = nil
     /// Number of rows that should be visible without scrolling. Default
     /// 6 matches the brief's call-out ("Top People list shows ~6 rows;
     /// scrollable to reveal #7 through #N").
@@ -125,7 +129,9 @@ struct ScrollableTopListPanel: View {
                 secondaryRightLabel: secondaryRightLabel,
                 emptyMessage: emptyMessage,
                 onSelect: onSelect,
-                actionTooltip: actionTooltip
+                actionTooltip: actionTooltip,
+                shareMessage: shareMessage,
+                shareCardSpec: shareCardSpec
             )
             // Inner padding so the rightmost edge of the rows doesn't
             // touch the scroll indicator track.

@@ -81,6 +81,13 @@ struct TopList: View {
     /// interactive row. Lets callers tell the user *what* will happen
     /// on click ("Search this person" vs "Search this group").
     var actionTooltip: String? = nil
+    /// Optional share-copy builder. When present, each row gets a distinct
+    /// trailing share control while the rest of the row keeps its search action.
+    var shareMessage: ((_ rank: Int, _ entry: TopListEntry) -> String)? = nil
+    /// Optional share-card builder. When present alongside `shareMessage`,
+    /// the trailing control shares a rendered Beli-style card image (built
+    /// lazily on click) WITH the text — instead of text alone.
+    var shareCardSpec: ((_ rank: Int, _ entry: TopListEntry) -> LeaderboardShareCard.Spec)? = nil
 
     /// Max value across the list — used to scale every bar relative to the top.
     private var maxPrimary: Int {
@@ -101,15 +108,17 @@ struct TopList: View {
         } else {
             VStack(spacing: Space.sm) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                    if let onSelect {
-                        TappableTopListRow(
+                    if onSelect != nil || shareMessage != nil {
+                        InteractiveTopListRow(
                             rank: idx + 1,
                             entry: entry,
                             maxPrimary: maxPrimary,
                             secondaryLeftLabel: secondaryLeftLabel,
                             secondaryRightLabel: secondaryRightLabel,
                             tooltip: actionTooltip,
-                            onSelect: onSelect
+                            onSelect: onSelect,
+                            shareMessage: shareMessage?(idx + 1, entry),
+                            shareCardSpec: shareCardSpec?(idx + 1, entry)
                         )
                     } else {
                         TopListRowContent(
@@ -301,73 +310,151 @@ struct TopListRowContent: View {
     }
 }
 
-/// Hoverable, clickable wrapper around a single `TopListRowContent`.
-/// Used by the Dashboard when the row should pre-populate a search
-/// query and summon the floating panel.
+/// Hoverable wrapper around a single `TopListRowContent`. The body keeps the
+/// existing search action, while a separate trailing control opens the native
+/// macOS share sheet. Keeping these as siblings avoids nesting buttons.
 ///
 /// Hover state: subtle accent-tinted fill + faint border + a trailing
-/// "↗" glyph that telegraphs "click takes you somewhere". Press state:
+/// share glyph. Press state:
 /// 1% scale-down via `PressableTopListRowStyle`. Animations use the
 /// `bm*` presets so motion sits with the rest of the app.
-fileprivate struct TappableTopListRow: View {
+fileprivate struct InteractiveTopListRow: View {
     let rank: Int
     let entry: TopListEntry
     let maxPrimary: Int
     let secondaryLeftLabel: String?
     let secondaryRightLabel: String?
     let tooltip: String?
-    let onSelect: (TopListEntry) -> Void
+    let onSelect: ((TopListEntry) -> Void)?
+    let shareMessage: String?
+    let shareCardSpec: LeaderboardShareCard.Spec?
 
     @State private var isHovering: Bool = false
+    @State private var isShowingSharePicker: Bool = false
+    /// True while the share popover is on screen. Keeps the anchor mounted
+    /// (and the glyph visible) after the pointer leaves the row — the
+    /// popover dies if its anchor view unmounts.
+    @State private var isSharePickerActive: Bool = false
 
     var body: some View {
-        Button {
-            onSelect(entry)
-        } label: {
-            HStack(spacing: Space.xs) {
-                TopListRowContent(
-                    rank: rank,
-                    entry: entry,
-                    maxPrimary: maxPrimary,
-                    secondaryLeftLabel: secondaryLeftLabel,
-                    secondaryRightLabel: secondaryRightLabel
-                )
+        HStack(spacing: Space.xs) {
+            if let onSelect {
+                Button {
+                    onSelect(entry)
+                } label: {
+                    rowContent
+                }
+                .buttonStyle(PressableTopListRowStyle())
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Arrow affordance — fades in on hover so the static
-                // state stays clean and only telegraphs interactivity
-                // once the user actually engages.
-                Image(systemName: "arrow.up.right.circle.fill")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(isHovering ? 1.0 : 0.0)
-                    .scaleEffect(isHovering ? 1.0 : 0.7)
-                    .animation(.bmHover, value: isHovering)
-                    .accessibilityHidden(true)
-                    .frame(width: 14)
+                .help(tooltip ?? "Search this entry")
+                .accessibilityLabel("\(entry.displayName), rank \(rank)")
+                .accessibilityHint(tooltip ?? "Opens search filtered to this entry")
+            } else {
+                rowContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, Space.sm)
-            .padding(.vertical, Space.xs)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
-                    .fill(Color.accentColor.opacity(isHovering ? 0.10 : 0.0))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
-                    .strokeBorder(
-                        Color.accentColor.opacity(isHovering ? 0.22 : 0.0),
-                        lineWidth: 0.75
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
+
+            if let shareMessage {
+                if let shareCardSpec {
+                    // Beli-style path: render the branded card image ON CLICK
+                    // and hand [card, text+link] to the native share popup.
+                    Button {
+                        isShowingSharePicker = true
+                    } label: {
+                        shareGlyph
+                    }
+                    .buttonStyle(.plain)
+                    .background {
+                        // Mounted ONLY while the row is hovered (or the picker
+                        // is up): an NSViewRepresentable per row would put ~16
+                        // AppKit-hosted views inside the scrolling list — real
+                        // scroll cost for a control that's needed at most once
+                        // at a time. Click always follows hover, so the anchor
+                        // is guaranteed to exist by the time it presents.
+                        if isHovering || isShowingSharePicker || isSharePickerActive {
+                            SharePickerAnchor(
+                                isPresented: $isShowingSharePicker,
+                                isActive: $isSharePickerActive,
+                                recipient: shareCardSpec.recipient
+                            ) {
+                                var items: [Any] = []
+                                if let card = LeaderboardShareCard.render(shareCardSpec) {
+                                    items.append(card)
+                                }
+                                items.append(shareMessage)
+                                return items
+                            }
+                        }
+                    }
+                    .help("Share your #\(rank) ranking")
+                    .accessibilityLabel("Share your number \(rank) ranking with \(entry.displayName)")
+                } else {
+                    // Text-only fallback for callers that never provide a card.
+                    ShareLink(
+                        item: shareMessage,
+                        subject: Text("My Hourglass texting stats")
+                    ) {
+                        shareGlyph
+                    }
+                    .buttonStyle(.plain)
+                    .help("Share your #\(rank) ranking")
+                    .accessibilityLabel("Share your number \(rank) ranking with \(entry.displayName)")
+                }
+            }
         }
-        .buttonStyle(PressableTopListRowStyle())
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .fill(Color.accentColor.opacity(isHovering ? 0.10 : 0.0))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .strokeBorder(
+                    Color.accentColor.opacity(isHovering ? 0.22 : 0.0),
+                    lineWidth: 0.75
+                )
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
         .onHover { hovering in
             withAnimation(.bmHover) { isHovering = hovering }
         }
-        .help(tooltip ?? "Search this entry")
-        .accessibilityLabel("\(entry.displayName), rank \(rank)")
-        .accessibilityHint(tooltip ?? "Opens search filtered to this entry")
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: Space.xs) {
+            TopListRowContent(
+                rank: rank,
+                entry: entry,
+                maxPrimary: maxPrimary,
+                secondaryLeftLabel: secondaryLeftLabel,
+                secondaryRightLabel: secondaryRightLabel
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// The small trailing share affordance — identical for both the card
+    /// path and the text-only fallback. Hidden at rest (opacity keeps the
+    /// layout slot so rows don't shift); appears on row hover and stays
+    /// while the share popover is up.
+    private var shareGlyph: some View {
+        let visible = isHovering || isSharePickerActive
+        return ZStack {
+            Circle().fill(Color.accentColor)
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .offset(y: -0.5)
+        }
+        .frame(width: 20, height: 20)
+        .opacity(visible ? 1.0 : 0.0)
+        .scaleEffect(visible ? 1.0 : 0.85)
+        .animation(.bmHover, value: visible)
+        .frame(width: 22, height: 26)
+        .contentShape(Rectangle())
+        .allowsHitTesting(visible)
     }
 }
 
@@ -561,10 +648,12 @@ struct GroupAvatarView: View {
     }
 
     /// One participant circle. Photo if we have one, generic glyph if we
-    /// don't — never empty.
+    /// don't — never empty. Decodes through `AvatarView.cachedDecode` so
+    /// scroll re-renders composite the same texture instead of
+    /// re-rasterizing the photo every body evaluation.
     @ViewBuilder
     private func participantCircle(bytes: Data?, diameter: CGFloat) -> some View {
-        if let bytes, let image = NSImage(data: bytes) {
+        if let image = AvatarView.cachedDecode(bytes) {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
