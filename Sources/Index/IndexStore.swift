@@ -38,7 +38,7 @@ public final class IndexStore: @unchecked Sendable {
     /// Bump this when the schema changes. On mismatch we blow the file away
     /// and reindex from scratch — cheap (~10s) and avoids ad-hoc migration
     /// bugs.
-    public static let schemaVersion: Int = 1
+    public static let schemaVersion: Int = 2
 
     /// State bookkeeping keys stored in the `index_state` table.
     public enum StateKey: String {
@@ -50,6 +50,11 @@ public final class IndexStore: @unchecked Sendable {
         /// Wall-clock timestamp (ISO-8601) of the most recent full reindex.
         /// Diagnostic only.
         case lastFullReindexAt = "last_full_reindex_at"
+        /// Highest source ROWID represented by the conversation-window
+        /// index. This is intentionally separate from `lastIndexedROWID`:
+        /// message FTS may be ready a few seconds before window construction
+        /// finishes, and hybrid search must not read a half-built corpus.
+        case lastWindowedROWID = "last_windowed_rowid"
     }
 
     public enum OpenError: Error, CustomStringConvertible {
@@ -158,6 +163,9 @@ public final class IndexStore: @unchecked Sendable {
 
             if let v = storedVersion, v != IndexStore.schemaVersion {
                 // Wipe everything and recreate.
+                try db.execute(sql: "DROP TABLE IF EXISTS window_member")
+                try db.execute(sql: "DROP TABLE IF EXISTS window_fts")
+                try db.execute(sql: "DROP TABLE IF EXISTS conversation_window")
                 try db.execute(sql: "DROP TABLE IF EXISTS messages_fts")
                 try db.execute(sql: "DROP TABLE IF EXISTS message_meta")
                 try db.execute(sql: "DELETE FROM index_state")
@@ -189,6 +197,63 @@ public final class IndexStore: @unchecked Sendable {
             try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_meta_chat ON message_meta(chat_id)")
             try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_meta_handle ON message_meta(handle_id)")
             try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_meta_type ON message_meta(associated_message_type)")
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_meta_window_order
+                ON message_meta(associated_message_type, chat_id, date, rowid)
+            """)
+
+            // Generic semantic retrieval unit. A window is a short,
+            // session-bounded exchange (up to eight turns, overlapping by
+            // four). Text lives in a trigram FTS table; exact scope metadata
+            // and the normalized Float16 Apple word-embedding live beside it.
+            // Float16 vectors stay as BLOBs beside compact sign-bit hashes.
+            // Search streams only hashes, then decodes a bounded exact-cosine
+            // shortlist, so the complete corpus is never resident in RAM.
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS conversation_window (
+                    id INTEGER PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    start_date INTEGER NOT NULL,
+                    end_date INTEGER NOT NULL,
+                    anchor_rowid INTEGER NOT NULL,
+                    message_count INTEGER NOT NULL,
+                    has_from_me INTEGER NOT NULL DEFAULT 0,
+                    has_from_other INTEGER NOT NULL DEFAULT 0,
+                    embedding BLOB,
+                    embedding_hash BLOB,
+                    embedding_dimensions INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            // Additive schema-v2 migration for early development builds that
+            // created the dense-vector column before the compact binary ANN
+            // signature was introduced. This does not invalidate message or
+            // window FTS and therefore must not force a 544k-row rebuild.
+            let windowColumns = try Row.fetchAll(db, sql: "PRAGMA table_info(conversation_window)")
+            let windowColumnNames = Set(windowColumns.compactMap { $0["name"] as String? })
+            if !windowColumnNames.contains("embedding_hash") {
+                try db.execute(sql: "ALTER TABLE conversation_window ADD COLUMN embedding_hash BLOB")
+            }
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE IF NOT EXISTS window_fts USING fts5(
+                    body,
+                    tokenize = 'trigram remove_diacritics 1'
+                )
+            """)
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS window_member (
+                    window_id INTEGER NOT NULL,
+                    message_rowid INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    is_from_me INTEGER NOT NULL,
+                    handle_id INTEGER,
+                    PRIMARY KEY(window_id, message_rowid)
+                )
+            """)
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_window_chat ON conversation_window(chat_id)")
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_window_dates ON conversation_window(start_date, end_date)")
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_window_anchor ON conversation_window(anchor_rowid)")
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_window_member_message ON window_member(message_rowid)")
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_window_member_sender ON window_member(is_from_me, handle_id)")
 
             try setState(db: db, key: .schemaVersion, value: String(IndexStore.schemaVersion))
         }
@@ -210,6 +275,13 @@ public final class IndexStore: @unchecked Sendable {
     /// Read the last-indexed ROWID. Returns 0 if no index has run yet.
     public func lastIndexedROWID() throws -> Int64 {
         guard let raw = try state(.lastIndexedROWID),
+              let n = Int64(raw) else { return 0 }
+        return n
+    }
+
+    /// Highest source ROWID fully represented by conversation windows.
+    public func lastWindowedROWID() throws -> Int64 {
+        guard let raw = try state(.lastWindowedROWID),
               let n = Int64(raw) else { return 0 }
         return n
     }
@@ -245,6 +317,22 @@ public final class IndexStore: @unchecked Sendable {
         try dbQueue.read { db in
             try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM message_meta") ?? 0
         }
+    }
+
+
+    /// Number of short conversation windows available to hybrid retrieval.
+    public func conversationWindowCount() throws -> Int64 {
+        try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_window") ?? 0
+        }
+    }
+
+    /// True only when window construction has caught up to message FTS.
+    public func conversationWindowsAreReady() throws -> Bool {
+        let indexed = try lastIndexedROWID()
+        let windowed = try lastWindowedROWID()
+        let count = try conversationWindowCount()
+        return indexed > 0 && windowed >= indexed && count > 0
     }
 
     /// Disk footprint of the index file in bytes.

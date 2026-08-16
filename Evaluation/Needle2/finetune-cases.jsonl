@@ -1,0 +1,64 @@
+{"query":"show me image attachments Howard sent last week","tool":"search_messages","args":{"from":"Howard","type":"image","in":"last week"},"reasoning":"Howard is the sender, image is the attachment type, and last week is the requested window"}
+{"query":"find links I sent Annika this month","tool":"search_messages","args":{"with":"Annika","from":"me","type":"link","in":"this month"},"reasoning":"Annika scopes the conversation, I sent means from me, link is the type, and this month is the window"}
+{"query":"what did Mom say about dinner yesterday","tool":"search_messages","args":{"from":"Mom","query":"dinner","in":"yesterday"},"reasoning":"Mom is the sender, dinner is the body topic, and yesterday is the window"}
+{"query":"show messages about protein shakes in the Gym Rats chat","tool":"search_messages","args":{"chat":"Gym Rats","query":"protein shakes"},"reasoning":"Gym Rats is the named chat and protein shakes are body words"}
+{"query":"find videos Beck sent me","tool":"search_messages","args":{"from":"Beck","type":"video"},"reasoning":"Beck is the sender and video is the requested attachment type"}
+{"query":"show files from the Lost Causes group chat","tool":"search_messages","args":{"chat":"Lost Causes","type":"file"},"reasoning":"Lost Causes is the chat and file is the attachment type"}
+{"query":"find messages I loved in the last month","tool":"search_messages","args":{"reaction":"love","in":"last month"},"reasoning":"love is the requested reaction and last month is the time window"}
+{"query":"search for vegas plans with Henry","tool":"search_messages","args":{"with":"Henry","query":"vegas plans"},"reasoning":"Henry scopes the conversation and vegas plans are body words"}
+{"query":"show audio messages from Mom this week","tool":"search_messages","args":{"from":"Mom","type":"audio","in":"this week"},"reasoning":"Mom is the sender, audio is the type, and this week is the window"}
+{"query":"find where I told Howard sorry","tool":"search_messages","args":{"with":"Howard","from":"me","query":"sorry"},"reasoning":"Howard scopes the conversation, I told means from me, and sorry is the body word"}
+{"query":"show stickers in the Family group","tool":"search_messages","args":{"chat":"Family","type":"sticker"},"reasoning":"Family is the chat and sticker is the attachment type"}
+{"query":"messages from Annika about graduation in 2025","tool":"search_messages","args":{"from":"Annika","query":"graduation","in":"2025"},"reasoning":"Annika is the sender, graduation is the body topic, and 2025 is the requested window"}
+{"query":"catch me up on my conversation with Beck this week","tool":"read_conversation","args":{"with":"Beck","in":"this week"},"reasoning":"Beck is the conversation partner and this week is the window"}
+{"query":"what were Annika and I talking about around two weeks ago","tool":"read_conversation","args":{"with":"Annika","in":"two weeks ago"},"reasoning":"Annika is the conversation partner and two weeks ago is the stated time"}
+{"query":"read my conversation with Mom yesterday","tool":"read_conversation","args":{"with":"Mom","in":"yesterday"},"reasoning":"Mom is the conversation partner and yesterday is the window"}
+{"query":"catch me up with Henry","tool":"read_conversation","args":{"with":"Henry"},"reasoning":"Henry is the conversation partner and no time window was requested"}
+{"query":"what is going on with Howard this month","tool":"read_conversation","args":{"with":"Howard","in":"this month"},"reasoning":"Howard is the conversation partner and this month is the window"}
+{"query":"read the messages between me and Beck from last week","tool":"read_conversation","args":{"with":"Beck","in":"last week"},"reasoning":"Beck is the conversation partner and last week is the window"}
+{"query":"how many audio messages are from me","tool":"count_messages","args":{"from":"me","type":"audio"},"reasoning":"how many requests a count, from me is the direction, and audio is the type"}
+{"query":"how many stickers did Henry send last month","tool":"count_messages","args":{"from":"Henry","type":"sticker","in":"last month"},"reasoning":"Henry is the sender, sticker is the type, and last month is the window"}
+{"query":"how many times did I say sorry to Howard","tool":"count_messages","args":{"with":"Howard","from":"me","query":"sorry"},"reasoning":"Howard scopes the conversation, I say means from me, and sorry is the body word"}
+{"query":"count images in the Gym Rats chat this week","tool":"count_messages","args":{"chat":"Gym Rats","type":"image","in":"this week"},"reasoning":"Gym Rats is the chat, image is the type, and this week is the window"}
+{"query":"how often did Mom mention dinner","tool":"count_messages","args":{"from":"Mom","query":"dinner"},"reasoning":"Mom is the sender and dinner is the body topic"}
+{"query":"number of links from me to Annika in 2025","tool":"count_messages","args":{"with":"Annika","from":"me","type":"link","in":"2025"},"reasoning":"Annika scopes the conversation, from me is the direction, link is the type, and 2025 is the window"}
+{"query":"how many messages got a laugh reaction yesterday","tool":"count_messages","args":{"reaction":"laugh","in":"yesterday"},"reasoning":"laugh is the reaction and yesterday is the window"}
+{"query":"count videos Beck sent in the last 30 days","tool":"count_messages","args":{"from":"Beck","type":"video","in":"last 30 days"},"reasoning":"Beck is the sender, video is the type, and last 30 days is the window"}
+{"query":"when did I first text Howard","tool":"first_message","args":{"with":"Howard","from":"me"},"reasoning":"first requests the earliest match, Howard scopes the conversation, and I text means from me"}
+{"query":"find the first time Mom mentioned graduation","tool":"first_message","args":{"from":"Mom","query":"graduation"},"reasoning":"first time requests the earliest match, Mom is the sender, and graduation is the body topic"}
+{"query":"what is the earliest image Beck sent","tool":"first_message","args":{"from":"Beck","type":"image"},"reasoning":"earliest selects the first match, Beck is the sender, and image is the type"}
+{"query":"first link I sent Annika","tool":"first_message","args":{"with":"Annika","from":"me","type":"link"},"reasoning":"first selects the earliest match, Annika scopes the conversation, from me is the direction, and link is the type"}
+{"query":"when was the first message about vegas in the Gym Rats chat","tool":"first_message","args":{"chat":"Gym Rats","query":"vegas"},"reasoning":"first selects the earliest match, Gym Rats is the chat, and vegas is the body topic"}
+{"query":"who do I text the most","tool":"top_contacts","args":{},"reasoning":"who and most request a ranking of contacts across all history"}
+{"query":"who did I text most last year","tool":"top_contacts","args":{"in":"last year"},"reasoning":"who and most request contact ranking and last year is the window"}
+{"query":"who are my top contacts in the Hao group","tool":"top_contacts","args":{"chat":"Hao"},"reasoning":"top contacts requests people, while Hao scopes the group"}
+{"query":"top five contacts this month","tool":"top_contacts","args":{"limit":5,"in":"this month"},"reasoning":"contacts are ranked, five is the limit, and this month is the window"}
+{"query":"rank the people I message in the Family group","tool":"top_contacts","args":{"chat":"Family"},"reasoning":"people are the ranking dimension and Family is the group scope"}
+{"query":"what is my most active group chat","tool":"top_groups","args":{},"reasoning":"most active group chat requests a ranking of groups"}
+{"query":"top five groups this month","tool":"top_groups","args":{"limit":5,"in":"this month"},"reasoning":"groups are ranked, five is the limit, and this month is the window"}
+{"query":"which group was busiest last year","tool":"top_groups","args":{"limit":1,"in":"last year"},"reasoning":"which group asks for one ranked group and last year is the window"}
+{"query":"rank my group chats for the last 30 days","tool":"top_groups","args":{"in":"last 30 days"},"reasoning":"group chats are ranked and last 30 days is the window"}
+{"query":"how active was I on messages last week","tool":"overview_stats","args":{"in":"last week"},"reasoning":"overall activity requests overview statistics and last week is the window"}
+{"query":"give me my total sent and received messages this year","tool":"overview_stats","args":{"in":"this year"},"reasoning":"sent and received totals request overview statistics and this year is the window"}
+{"query":"overall iMessage activity yesterday","tool":"overview_stats","args":{"in":"yesterday"},"reasoning":"overall activity requests overview statistics and yesterday is the window"}
+{"query":"show my messaging totals for 2025","tool":"overview_stats","args":{"in":"2025"},"reasoning":"messaging totals request overview statistics and 2025 is the window"}
+{"query":"who are the new friends I made since 2026-01-01","tool":"friends_made_since","args":{"since":"2026-01-01"},"reasoning":"new friends selects relationship starts and 2026-01-01 is the starting date"}
+{"query":"who did I meet through messages since 2025-09-01","tool":"friends_made_since","args":{"since":"2025-09-01"},"reasoning":"who did I meet selects relationship starts and 2025-09-01 is the starting date"}
+{"query":"people I first messaged since 2026-03-01","tool":"friends_made_since","args":{"since":"2026-03-01"},"reasoning":"first-messaged people selects new relationships and the explicit date is the starting point"}
+{"query":"list new message friends since 2026-06-15","tool":"friends_made_since","args":{"since":"2026-06-15"},"reasoning":"new message friends selects relationship starts and 2026-06-15 is the starting date"}
+{"query":"what plans did I make this week","tool":"plans_in_window","args":{"in":"this week"},"reasoning":"plans selects commitments in sent messages and this week is the window"}
+{"query":"what did I agree to do yesterday","tool":"plans_in_window","args":{"in":"yesterday"},"reasoning":"agree to do selects commitments and yesterday is the window"}
+{"query":"find my commitments for next week","tool":"plans_in_window","args":{"in":"next week"},"reasoning":"commitments selects plans and next week is the window"}
+{"query":"meetings I said yes to this month","tool":"plans_in_window","args":{"in":"this month"},"reasoning":"meetings I accepted selects sent commitments and this month is the window"}
+{"query":"find a contact named Satyajit","tool":"search_contacts","args":{"name":"Satyajit"},"reasoning":"contact named requests contact lookup and Satyajit is the name"}
+{"query":"do I have anyone named Arnav in my contacts","tool":"search_contacts","args":{"name":"Arnav"},"reasoning":"in my contacts requests contact lookup and Arnav is the name"}
+{"query":"search contacts for Howard","tool":"search_contacts","args":{"name":"Howard"},"reasoning":"search contacts requests contact lookup and Howard is the name"}
+{"query":"is there a person called Annika in contacts","tool":"search_contacts","args":{"name":"Annika"},"reasoning":"called in contacts requests contact lookup and Annika is the name"}
+{"query":"turn the volume down","tool":null,"args":{},"reasoning":"this is a device-control request unrelated to messages or contacts"}
+{"query":"what is the weather tomorrow","tool":null,"args":{},"reasoning":"weather is outside the available local message functions"}
+{"query":"write an email to Mom","tool":null,"args":{},"reasoning":"writing email is not message database search"}
+{"query":"play my workout playlist","tool":null,"args":{},"reasoning":"media playback is outside the available functions"}
+{"query":"calculate 37 times 19","tool":null,"args":{},"reasoning":"arithmetic is outside the available functions"}
+{"query":"open Safari","tool":null,"args":{},"reasoning":"opening applications is outside the available functions"}
+{"query":"remind me to buy milk","tool":null,"args":{},"reasoning":"creating reminders is outside the available functions"}
+{"query":"translate hello into Japanese","tool":null,"args":{},"reasoning":"translation is outside the available functions"}

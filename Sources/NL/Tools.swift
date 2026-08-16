@@ -36,10 +36,67 @@ public struct NewFriend: Sendable, Equatable {
     }
 }
 
+/// Typed request/response boundary between the Needle control plane and the
+/// generic conversation-window data plane. Mocks can leave the default nil
+/// implementation in place; production uses the local FTS/vector index.
+public struct HybridMessageRetrievalRequest: Sendable, Equatable {
+    public let semanticQuery: String
+    public let withPerson: String?
+    public let fromSender: String?
+    public let chat: String?
+    public let dateRange: ClosedRange<Date>?
+    public let limit: Int
+
+    public init(
+        semanticQuery: String,
+        withPerson: String? = nil,
+        fromSender: String? = nil,
+        chat: String? = nil,
+        dateRange: ClosedRange<Date>?,
+        limit: Int
+    ) {
+        self.semanticQuery = semanticQuery
+        self.withPerson = withPerson
+        self.fromSender = fromSender
+        self.chat = chat
+        self.dateRange = dateRange
+        self.limit = limit
+    }
+}
+
+public struct HybridMessageRetrievalOutcome: Sendable {
+    public let candidates: [MessageSearch.Result]
+    public let windowCount: Int
+    public let exactCandidateCount: Int
+    public let expandedCandidateCount: Int
+    public let denseCandidateCount: Int
+
+    public init(
+        candidates: [MessageSearch.Result],
+        windowCount: Int,
+        exactCandidateCount: Int,
+        expandedCandidateCount: Int,
+        denseCandidateCount: Int
+    ) {
+        self.candidates = candidates
+        self.windowCount = windowCount
+        self.exactCandidateCount = exactCandidateCount
+        self.expandedCandidateCount = expandedCandidateCount
+        self.denseCandidateCount = denseCandidateCount
+    }
+}
+
 /// Tool surface exposed to `NLAgent`. Every tool runs against the existing
 /// chat.db / FTS5 mirror — the NL surface is strictly read-only on the
 /// data plane.
 public protocol NLAgentTools: Sendable {
+
+    /// Generic semantic retrieval over short conversation windows. Returns
+    /// nil when the window index is unavailable or incomplete, instructing
+    /// the agent to use the ordinary exact search path without losing data.
+    func hybridSearch(
+        _ request: HybridMessageRetrievalRequest
+    ) async throws -> HybridMessageRetrievalOutcome?
 
     /// Run a structured search using the existing operator language.
     /// `query` is a string like `with:"Annika" last:14d argument` — exactly
@@ -285,6 +342,9 @@ public extension NLAgentTools {
     }
 
     func availableContactNames() async -> [String] { [] }
+    func hybridSearch(
+        _ request: HybridMessageRetrievalRequest
+    ) async throws -> HybridMessageRetrievalOutcome? { nil }
     func topContacts(in dateRange: ClosedRange<Date>?, limit: Int) async throws -> [DashboardStats.ContactStat] { [] }
     // Default: ignore the chat scope. Conformers that don't model chat
     // membership (mocks, lightweight tools) fall back to the global ranking.
@@ -1420,4 +1480,3 @@ public struct MessageSearchTools: NLAgentTools {
         }
     }
 }
-

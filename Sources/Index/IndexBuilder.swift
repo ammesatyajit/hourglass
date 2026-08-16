@@ -93,6 +93,11 @@ public enum IndexBuilder {
         try store.dbQueue.write { db in
             try db.execute(sql: "DELETE FROM messages_fts")
             try db.execute(sql: "DELETE FROM message_meta")
+            try db.execute(sql: "DELETE FROM window_member")
+            try db.execute(sql: "DELETE FROM window_fts")
+            try db.execute(sql: "DELETE FROM conversation_window")
+            try IndexStore.setState(db: db, key: .lastIndexedROWID, value: "0")
+            try IndexStore.setState(db: db, key: .lastWindowedROWID, value: "0")
         }
 
         // Open a private read-only connection to the source. Sharing the
@@ -185,6 +190,11 @@ public enum IndexBuilder {
         }
 
         // Stamp the wall-clock as a diagnostic.
+        // Build the generic conversation-window FTS after the per-message
+        // mirror is complete. Dense vectors are intentionally backfilled by
+        // IndexSync in small utility-priority batches, so first-launch exact
+        // search is not held hostage by semantic indexing.
+        _ = try ConversationWindowIndexer.rebuildAll(store: store)
         let iso = ISO8601DateFormatter().string(from: Date())
         try store.setState(.lastFullReindexAt, value: iso)
 
@@ -211,6 +221,12 @@ public enum IndexBuilder {
             try Int64.fetchOne(db, sql: "SELECT MAX(ROWID) FROM message") ?? 0
         }
         if liveMax <= last {
+            // A process can terminate after message FTS commits but before
+            // the window checkpoint advances. Repair that state instead of
+            // leaving hybrid retrieval disabled forever.
+            if (try? store.lastWindowedROWID()) ?? 0 < last {
+                _ = try ConversationWindowIndexer.rebuildAll(store: store)
+            }
             return 0   // Nothing new.
         }
 
@@ -276,6 +292,22 @@ public enum IndexBuilder {
                 progress?(IndexProgress(indexed: indexed, total: toCatchUp))
                 try store.setState(.lastIndexedROWID, value: String(maxROWIDSeen))
             }
+        }
+        let affectedChats: Set<Int64> = try store.dbQueue.read { db in
+            Set(try Int64.fetchAll(db, sql: """
+                SELECT DISTINCT chat_id
+                FROM message_meta
+                WHERE rowid > ? AND chat_id IS NOT NULL
+            """, arguments: [last]))
+        }
+        if !affectedChats.isEmpty {
+            _ = try ConversationWindowIndexer.rebuildChats(
+                affectedChats,
+                store: store,
+                afterRowID: last
+            )
+        } else {
+            try store.setState(.lastWindowedROWID, value: String(maxROWIDSeen))
         }
         return indexed
     }
@@ -363,6 +395,12 @@ public enum IndexBuilder {
                 refreshed += n
             }
         }
+        // Existing-row edits are reflected immediately in message FTS. Window
+        // tails are rebuilt for every newly appended message in `catchUp`;
+        // rebuilding the complete lifetime of every chat active in the last
+        // 30 days here would turn an hourly mutation refresh into unbounded
+        // work. A future targeted edit hook can refresh only windows whose
+        // `window_member` rows reference an edited message.
         return refreshed
     }
 

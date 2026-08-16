@@ -1,0 +1,4 @@
+module Needle2 [system] {
+  header "macos-arm64/needle.h"
+  export *
+}

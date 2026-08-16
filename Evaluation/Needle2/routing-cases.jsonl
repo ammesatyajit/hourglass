@@ -1,0 +1,24 @@
+{"query":"show me photos Howard sent last week","tool":"search_messages","args":{"from":"Howard","type":"image","in":"last_week"}}
+{"query":"find links I sent Annika this month","tool":"search_messages","args":{"with":"Annika","from":"me","type":"link","in":"this_month"}}
+{"query":"what did Mom say about dinner yesterday","tool":"search_messages","args":{"from":"Mom","query":"dinner","in":"yesterday"}}
+{"query":"show messages about protein shakes in the Gym Rats chat","tool":"search_messages","args":{"chat":"Gym Rats","query":"protein shakes"}}
+{"query":"catch me up on my conversation with Beck this week","tool":"read_conversation","args":{"with":"Beck","in":"this_week"}}
+{"query":"what were Annika and I talking about around two weeks ago","tool":"read_conversation","args":{"with":"Annika"}}
+{"query":"how many voice messages have I sent","tool":"count_messages","args":{"from":"me","type":"audio"}}
+{"query":"how many stickers did Henry send last month","tool":"count_messages","args":{"from":"Henry","type":"sticker","in":"last_month"}}
+{"query":"how many times did I say sorry to Howard","tool":"count_messages","args":{"from":"me","with":"Howard","query":"sorry"}}
+{"query":"when did I first text Howard","tool":"first_message","args":{"with":"Howard"}}
+{"query":"find the first time Mom mentioned graduation","tool":"first_message","args":{"from":"Mom","query":"graduation"}}
+{"query":"who do I text the most","tool":"top_contacts","args":{}}
+{"query":"who did I text most last year","tool":"top_contacts","args":{"in":"last year"}}
+{"query":"who are my top contacts in the Hao group","tool":"top_contacts","args":{"chat":"Hao"}}
+{"query":"what is my most active group chat","tool":"top_groups","args":{}}
+{"query":"top five groups this month","tool":"top_groups","args":{"limit":5,"in":"this_month"}}
+{"query":"how active was I on messages last week","tool":"overview_stats","args":{"in":"last_week"}}
+{"query":"give me my total sent and received messages this year","tool":"overview_stats","args":{"in":"this year"}}
+{"query":"who are the new friends I made since January 1","tool":"friends_made_since","args":{}}
+{"query":"who did I meet through messages since September","tool":"friends_made_since","args":{}}
+{"query":"what plans did I make this week","tool":"plans_in_window","args":{"in":"this_week"}}
+{"query":"what did I agree to do yesterday","tool":"plans_in_window","args":{"in":"yesterday"}}
+{"query":"find a contact named Satyajit","tool":"search_contacts","args":{"name":"Satyajit"}}
+{"query":"do I have anyone named Arnav in my contacts","tool":"search_contacts","args":{"name":"Arnav"}}

@@ -1,0 +1,139 @@
+[
+  {
+    "name": "search_messages",
+    "description": "Default function for iMessage recall and topic questions. Use when words like plan, group, contact, top, liked, or link are merely part of the topic rather than an explicit operation.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Literal topic words expected in message bodies; exclude request verbs, function names, people, dates, and range words", "maxLength": 120 },
+        "with": { "type": "string", "description": "Contact name whose conversations to search", "maxLength": 80 },
+        "from": { "type": "string", "description": "Sender contact name, or me for messages sent by the user", "maxLength": 80 },
+        "chat": { "type": "string", "description": "Group or chat name", "maxLength": 100 },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "sticker", "link", "file"] },
+        "reaction": { "type": "string", "enum": ["love", "laugh", "like", "dislike", "emphasize", "question"] },
+        "in": { "type": "string", "description": "Date only: a known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "read_conversation",
+    "description": "Read a one-to-one conversation chronologically. Use only when the user explicitly asks to catch up, inspect, or recall what a conversation was about.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "with": { "type": "string", "description": "Contact name", "maxLength": 80 },
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 80 }
+      },
+      "required": ["with"]
+    }
+  },
+  {
+    "name": "count_messages",
+    "description": "Return the exact number of iMessage messages matching words and optional person, sender, chat, media, reaction, and date filters. Use for how-many questions.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Words from the message body", "maxLength": 120 },
+        "with": { "type": "string", "description": "Contact name whose conversations to count", "maxLength": 80 },
+        "from": { "type": "string", "description": "Sender contact name, or me for messages sent by the user", "maxLength": 80 },
+        "chat": { "type": "string", "description": "Group or chat name", "maxLength": 100 },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "sticker", "link", "file"] },
+        "reaction": { "type": "string", "enum": ["love", "laugh", "like", "dislike", "emphasize", "question"] },
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "first_message",
+    "description": "Return the earliest iMessage message matching words and optional person, sender, chat, media, reaction, and date filters. Use for first/earliest/when-did questions.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Words from the message body", "maxLength": 120 },
+        "with": { "type": "string", "description": "Contact name whose conversations to search", "maxLength": 80 },
+        "from": { "type": "string", "description": "Sender contact name, or me for messages sent by the user", "maxLength": 80 },
+        "chat": { "type": "string", "description": "Group or chat name", "maxLength": 100 },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "sticker", "link", "file"] },
+        "reaction": { "type": "string", "enum": ["love", "laugh", "like", "dislike", "emphasize", "question"] },
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "top_contacts",
+    "description": "Rank people by iMessage volume. Use only when explicitly asked to rank contacts or who the user texts most; a contact name or the word top alone is insufficient.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "chat": { "type": "string", "description": "Optional group name whose members should be ranked", "maxLength": 100 },
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "top_groups",
+    "description": "Rank group chats by iMessage volume. Use only for an explicit most-active, biggest, or top-groups ranking request; do not use for a topic or named group.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "overview_stats",
+    "description": "Return total, sent, received, and distinct-chat iMessage counts for a date window. Use for overall messaging activity or summary totals.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "friends_made_since",
+    "description": "Find people whose iMessage relationship with the user began after a date. Use for new friends, people met, or friends made since a date.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "since": { "type": "string", "description": "Start date as YYYY-MM-DD", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 30 }
+      },
+      "required": ["since"]
+    }
+  },
+  {
+    "name": "plans_in_window",
+    "description": "Find commitments the user made in sent iMessages. Use only when explicitly asked what plans or commitments the user made; do not use when plan/plans is merely a message topic.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "in": { "type": "string", "description": "Known window token, ISO date, or ISO date range", "maxLength": 40, "pattern": "^(?:all_time|today|yesterday|this_week|last_week|this_month|last_month|last_24h|last_7d|last_14d|last_30d|last_3mo|last_6mo|last_1y|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\\.\\.[0-9]{4}-[0-9]{2}-[0-9]{2})?)$" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 80 }
+      },
+      "required": ["in"]
+    }
+  },
+  {
+    "name": "search_contacts",
+    "description": "Search the user's iMessage contacts and people by name. Use to find whether a person/contact exists, not to search message bodies.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full or partial contact name", "maxLength": 80 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 30 }
+      },
+      "required": ["name"]
+    }
+  }
+]

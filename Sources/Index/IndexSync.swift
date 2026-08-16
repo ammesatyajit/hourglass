@@ -26,6 +26,10 @@ public actor IndexSync {
 
     /// Active sync timer task. We keep one alive at a time.
     private var timerTask: Task<Void, Never>?
+    /// Separate utility-priority semantic pass. Lexical windows are ready
+    /// immediately; this continuously fills compact dense vectors without
+    /// making users wait two hours at 96 rows per five-second poll.
+    private var semanticTask: Task<Void, Never>?
 
     private let store: IndexStore
     private let chatDBURL: URL
@@ -59,12 +63,50 @@ public actor IndexSync {
                 }
                 // Slower-cadence re-emit of the last 30 days to catch
                 // mutations to already-indexed rows. Codex M3.
-                await self.maybeRefreshRecentWindow()
+                self.maybeRefreshRecentWindow()
                 do {
                     try await Task.sleep(for: cadence)
                 } catch {
                     // Task was cancelled mid-sleep. Exit the loop.
                     return
+                }
+            }
+        }
+        semanticTask = Task.detached(priority: .utility) { [store] in
+            // Reuse one bounded-cache encoder so repeated conversational words
+            // do not trigger the same NaturalLanguage lookup thousands of
+            // times. The cache is capped in AppleWordSemanticEncoder (~5 MB).
+            let encoder = AppleWordSemanticEncoder()
+            // First launch and panel-open searches are latency-sensitive.
+            // Lexical + already-indexed dense retrieval is immediately ready;
+            // let that work finish before opportunistic vector backfill starts.
+            do { try await Task.sleep(for: .seconds(15)) }
+            catch { return }
+            while !Task.isCancelled {
+                do {
+                    let interactiveDelay = SemanticIndexWorkload.backgroundDelay()
+                    if interactiveDelay > 0 {
+                        try await Task.sleep(for: .seconds(interactiveDelay))
+                        continue
+                    }
+                    let processed = try ConversationWindowIndexer.backfillEmbeddings(
+                        store: store,
+                        limit: 64,
+                        encoder: encoder
+                    )
+                    if processed == 0 {
+                        try await Task.sleep(for: .seconds(30))
+                    } else {
+                        // Keep each CPU/DB burst short and yield between them.
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    #if DEBUG
+                    print("IndexSync.semanticBackfill failed: \(error)")
+                    #endif
+                    try? await Task.sleep(for: .seconds(5))
                 }
             }
         }
@@ -93,6 +135,8 @@ public actor IndexSync {
     public func stop() {
         timerTask?.cancel()
         timerTask = nil
+        semanticTask?.cancel()
+        semanticTask = nil
     }
 
     /// Run one immediate catch-up pass. Returns the number of rows that were

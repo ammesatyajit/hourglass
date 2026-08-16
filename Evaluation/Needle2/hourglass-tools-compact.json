@@ -1,0 +1,69 @@
+[
+  {
+    "name": "query_messages",
+    "description": "Search the user's iMessage database. Set action=count for how many, first for earliest/when first, read for catch-up/investigation of a person, otherwise search.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["search", "count", "first", "read"], "description": "Exact operation requested" },
+        "query": { "type": "string", "description": "Only words expected inside message bodies; never put a person's name or date here", "maxLength": 120 },
+        "with": { "type": "string", "description": "Contact whose conversation is searched or read", "maxLength": 80 },
+        "from": { "type": "string", "description": "me if the user sent it; otherwise the contact who sent it", "maxLength": 80 },
+        "chat": { "type": "string", "description": "Named group chat", "maxLength": 100 },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "sticker", "link", "file"] },
+        "reaction": { "type": "string", "enum": ["love", "laugh", "like", "dislike", "emphasize", "question"] },
+        "in": { "type": "string", "description": "Date phrase copied from the request, such as last week, this month, yesterday, all time, or a date range", "maxLength": 40 }
+      },
+      "required": ["action"]
+    }
+  },
+  {
+    "name": "rank_activity",
+    "description": "Rank the user's iMessage contacts or group chats by message volume. Use for top/most/biggest contact or group questions.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "by": { "type": "string", "enum": ["contacts", "groups"], "description": "What the user wants ranked" },
+        "chat": { "type": "string", "description": "Optional named group whose members should be ranked", "maxLength": 100 },
+        "in": { "type": "string", "description": "Date phrase copied from the request; all time when absent", "maxLength": 40 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+      },
+      "required": ["by"]
+    }
+  },
+  {
+    "name": "overview_stats",
+    "description": "Get total, sent, received, and distinct-chat counts for overall iMessage activity in a date window.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "in": { "type": "string", "description": "Date phrase copied from the request", "maxLength": 40 }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "find_people",
+    "description": "Search contact names or find people whose messaging relationship with the user began since a date.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["search_contacts", "friends_made_since"] },
+        "name": { "type": "string", "description": "Name to find when searching contacts", "maxLength": 80 },
+        "since": { "type": "string", "description": "Start date or date phrase for new friends", "maxLength": 40 }
+      },
+      "required": ["action"]
+    }
+  },
+  {
+    "name": "find_plans",
+    "description": "Find plans, meetings, commitments, and things the user agreed to do in sent iMessages during a date window.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "in": { "type": "string", "description": "Date phrase copied from the request", "maxLength": 40 }
+      },
+      "required": []
+    }
+  }
+]
