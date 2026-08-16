@@ -33,7 +33,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.3.1/Hourglass.dmg"
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.3.1/Hourglass.dmg"
                 type="application/octet-stream"
                 sparkle:edSignature="vHjArfswH6YorNqSewbGw7e2hWLOpvHt48/wkfLwl9T6Kp+qjjT7jig2Pz2zusbaaZUk6vCN0KZZzysBdiS2Cw==" length="16366611" />
         </item>
@@ -61,7 +61,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.3.0/Hourglass.dmg"
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.3.0/Hourglass.dmg"
                 type="application/octet-stream"
                 sparkle:edSignature="gjX+qWsVt9kD/2A7Ee09/suLJbuQ+sOUlZDcGZ6Cz/6EkeKjOvXrqblcpKxzp7XJZLldln+oozJE01NFQqHyAw==" length="16411342" />
         </item>
@@ -79,7 +79,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.2.1/Hourglass.dmg"
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.2.1/Hourglass.dmg"
                 type="application/octet-stream"
                 sparkle:edSignature="oBEmR3nP05gEOTvzojUje9bpnhqbRcQ3NVpYVWLRyIdq6KMbCHQDZOhvg6S3zjgjyD1M3ex3XWWtnYO52rPzBg==" length="24755923" />
         </item>
@@ -106,7 +106,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://github.com/ammesatyajit/hourglass/releases/download/v0.2.0/Hourglass.dmg"
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.2.0/Hourglass.dmg"
                 type="application/octet-stream"
                 sparkle:edSignature="QotXLqBbvg1YDtOc5j61O0JbdKSxA18gOhJZ0zsnjp7OvO45L0L5uPs2+mT0EjeBEceXecV8NtE4T0oGNS+ACA==" length="24746537" />
         </item>

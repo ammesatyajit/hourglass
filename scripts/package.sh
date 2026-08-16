@@ -17,12 +17,12 @@
 #                        it on the developer machine outside any tracked
 #                        directory (e.g. `~/.config/hourglass/sparkle.key`,
 #                        mode 0600).
-#   SPARKLE_DOWNLOAD_URL the https URL where this DMG will be hosted (used
-#                        in the printed <item> block). Defaults to the
-#                        GitHub Releases download URL for the matching
-#                        tag — `gh release create vX.Y.Z dist/<DMG>` is the
-#                        expected publish step. Override only if you're
-#                        hosting DMGs elsewhere.
+#   SPARKLE_DOWNLOAD_URL the https URL Sparkle should use for this DMG (used
+#                        in the printed <item> block). Defaults to Hourglass's
+#                        Cloudflare `/update` route, which records auto-updates
+#                        separately before redirecting to the matching GitHub
+#                        Release asset. Override only when deliberately using
+#                        another update host.
 #
 # Usage:
 #   DEVELOPER_ID="..." NOTARY_PROFILE="..." ./scripts/package.sh
@@ -196,10 +196,9 @@ APP_PLIST="$APP_PATH/Contents/Info.plist"
 APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST" 2>/dev/null || echo "0.0.0")"
 BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST" 2>/dev/null || echo "0")"
 PUB_DATE="$(LC_TIME=en_US.UTF-8 date -u "+%a, %d %b %Y %H:%M:%S +0000")"
-# GitHub Releases is the default DMG host — tag convention is `vX.Y.Z` and
-# the DMG is attached as a release asset. Override with SPARKLE_DOWNLOAD_URL
-# if you're hosting elsewhere.
-DOWNLOAD_URL="${SPARKLE_DOWNLOAD_URL:-https://github.com/ammesatyajit/hourglass/releases/download/v${APP_VERSION}/${DMG_FILENAME}}"
+# GitHub Releases remains the origin for the DMG, but Sparkle goes through the
+# Worker so update traffic never inflates the fresh/manual-download metric.
+DOWNLOAD_URL="${SPARKLE_DOWNLOAD_URL:-https://hourglass-downloads.ammesatyajit.workers.dev/update/${APP_VERSION}/${DMG_FILENAME}}"
 
 echo ""
 echo "✓ Sparkle signed: $DMG_PATH"

@@ -47,3 +47,5 @@ sparkle_eddsa_priv*
 .idea/
 *.swp
 .claude/worktrees/
+# Generated from the compact, reviewed Needle2 fine-tuning cases.
+Evaluation/Needle2/hourglass-finetune.jsonl

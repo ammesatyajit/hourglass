@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ammesatyajit/hourglass/releases/latest/download/Hourglass.dmg"><strong>Download for macOS →</strong></a>
+  <a href="https://hourglass-downloads.ammesatyajit.workers.dev/download/0.3.1/Hourglass.dmg"><strong>Download for macOS →</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/ammesatyajit/hourglass/releases">Changelog</a>
   &nbsp;·&nbsp;
@@ -21,7 +21,6 @@
   <img src="https://img.shields.io/github/v/release/ammesatyajit/hourglass?style=flat-square&color=blue" alt="Latest release" />
   <img src="https://img.shields.io/badge/macOS-15%2B-black?style=flat-square&logo=apple" alt="macOS 15+" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/github/downloads/ammesatyajit/hourglass/total?style=flat-square&color=blueviolet" alt="Downloads" />
 </p>
 
 ---
