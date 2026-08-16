@@ -920,7 +920,8 @@ public extension NLAgent {
                         plan: nil,
                         fallbackQuery: outcome.fallbackQuery,
                         explanation: nil,
-                        degradedToFallback: runtimeFailed || outcome.failed
+                        degradedToFallback: runtimeFailed || outcome.failed,
+                        exchanges: outcome.exchanges
                     )
                 }
             }
@@ -974,7 +975,8 @@ public extension NLAgent {
                     plan: nil,
                     fallbackQuery: fallback,
                     explanation: nil,
-                    degradedToFallback: runtimeFailed
+                    degradedToFallback: runtimeFailed,
+                    exchanges: outcome.exchanges
                 )
             }
         }

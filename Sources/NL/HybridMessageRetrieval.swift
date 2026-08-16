@@ -157,28 +157,42 @@ extension MessageSearchTools {
             return $0.hit.windowID > $1.hit.windowID
         }
 
+        // Diversity pass: the top results must be DIFFERENT moments. The
+        // member-overlap dedupe above only drops overlapping window strides;
+        // non-overlapping windows of one long conversation (or several hits
+        // minutes apart in one chat) would still fill every slot. Group by
+        // exchange identity — same chat within a two-hour moment, the
+        // conflict retriever's precedent — keeping one result per exchange
+        // with the runner-up windows' messages attached as context.
+        let exchanges = MessageExchangeGrouping.distinctExchanges(
+            from: rankedWindows.map {
+                MessageExchangeGrouping.Candidate(hero: $0.hero, messages: $0.messages)
+            },
+            maxExchanges: 6
+        )
+
         var ordered: [MessageSearch.Result] = []
         var seen = Set<Int64>()
         func append(_ result: MessageSearch.Result) {
             if seen.insert(result.message.id).inserted { ordered.append(result) }
         }
 
-        var acceptedWindows = 0
-        for ranked in rankedWindows.prefix(6) {
-            append(ranked.hero)
-            for result in ranked.messages {
-                append(result)
-            }
-            acceptedWindows += 1
+        // Flat candidates lead with one hero per distinct exchange so any
+        // consumer rendering a top-N list shows N different moments; each
+        // exchange's surrounding messages follow for context-aware paths.
+        for exchange in exchanges { append(exchange.hero) }
+        for exchange in exchanges {
+            for result in exchange.messages { append(result) }
             if ordered.count >= request.limit { break }
         }
 
         return HybridMessageRetrievalOutcome(
             candidates: Array(ordered.prefix(request.limit)),
-            windowCount: acceptedWindows,
+            windowCount: exchanges.count,
             exactCandidateCount: report.exactCandidateCount,
             expandedCandidateCount: report.expandedCandidateCount,
-            denseCandidateCount: report.denseCandidateCount
+            denseCandidateCount: report.denseCandidateCount,
+            exchanges: exchanges
         )
     }
 

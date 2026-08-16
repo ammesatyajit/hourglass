@@ -371,6 +371,96 @@ final class ConversationWindowRetrievalTests: XCTestCase {
         XCTAssertNotNil(encoder.vector(for: "funny story that made everyone laugh"))
     }
 
+    private func exchangeResult(
+        id: Int64,
+        chatID: Int64,
+        minuteOffset: Int
+    ) -> MessageSearch.Result {
+        MessageSearch.Result(
+            message: Message(
+                id: id,
+                guid: "message-\(id)",
+                date: Date(timeIntervalSince1970: 1_700_000_000 + Double(minuteOffset * 60)),
+                isFromMe: false,
+                chatRowID: chatID,
+                senderHandle: "+15555550100",
+                chatStyle: 45,
+                chatDisplayName: nil,
+                body: "turn \(id)",
+                associatedMessageType: 0
+            ),
+            partnerName: "Test Partner",
+            senderName: "Test Sender"
+        )
+    }
+
+    func testExchangeGroupingCollapsesSameMomentAndKeepsDistinctMoments() throws {
+        let bestHero = exchangeResult(id: 10, chatID: 1, minuteOffset: 0)
+        // Same chat, 30 minutes later — the SAME moment, must not take a slot.
+        let sameMomentHero = exchangeResult(id: 12, chatID: 1, minuteOffset: 30)
+        // Same chat but 26 hours later — a distinct moment.
+        let laterHero = exchangeResult(id: 30, chatID: 1, minuteOffset: 26 * 60)
+        // Different chat minutes after the best hero — a distinct moment.
+        let otherChatHero = exchangeResult(id: 40, chatID: 2, minuteOffset: 5)
+
+        let exchanges = MessageExchangeGrouping.distinctExchanges(
+            from: [
+                MessageExchangeGrouping.Candidate(
+                    hero: bestHero,
+                    messages: [
+                        exchangeResult(id: 9, chatID: 1, minuteOffset: -1),
+                        bestHero,
+                        exchangeResult(id: 11, chatID: 1, minuteOffset: 1),
+                    ]
+                ),
+                MessageExchangeGrouping.Candidate(
+                    hero: sameMomentHero,
+                    messages: [
+                        sameMomentHero,
+                        exchangeResult(id: 13, chatID: 1, minuteOffset: 31),
+                    ]
+                ),
+                MessageExchangeGrouping.Candidate(hero: laterHero, messages: [laterHero]),
+                MessageExchangeGrouping.Candidate(hero: otherChatHero, messages: [otherChatHero]),
+            ],
+            maxExchanges: 6
+        )
+
+        // Two candidates from the same session/bucket become ONE result;
+        // candidates from different exchanges stay separate results.
+        XCTAssertEqual(exchanges.map(\.hero.message.id), [10, 30, 40])
+
+        // The merged runner-up's messages stay attached, chronologically.
+        let winner = try XCTUnwrap(exchanges.first)
+        XCTAssertEqual(winner.messages.map(\.message.id), [9, 10, 11, 12, 13])
+    }
+
+    func testExchangeGroupingHonorsSlotCapAndPerExchangeMessageCap() throws {
+        let hero = exchangeResult(id: 110, chatID: 1, minuteOffset: 10)
+        let longWindow = (100..<120).map { id in
+            id == 110 ? hero : exchangeResult(id: Int64(id), chatID: 1, minuteOffset: id - 100)
+        }
+        let secondHero = exchangeResult(id: 200, chatID: 2, minuteOffset: 0)
+        let thirdHero = exchangeResult(id: 300, chatID: 3, minuteOffset: 0)
+
+        let exchanges = MessageExchangeGrouping.distinctExchanges(
+            from: [
+                MessageExchangeGrouping.Candidate(hero: hero, messages: longWindow),
+                MessageExchangeGrouping.Candidate(hero: secondHero, messages: [secondHero]),
+                MessageExchangeGrouping.Candidate(hero: thirdHero, messages: [thirdHero]),
+            ],
+            maxExchanges: 2
+        )
+
+        // Only the two best distinct moments survive the slot cap.
+        XCTAssertEqual(exchanges.map(\.hero.message.id), [110, 200])
+
+        // Expansion is bounded and always contains the hero.
+        let capped = try XCTUnwrap(exchanges.first)
+        XCTAssertEqual(capped.messages.count, MessageExchangeGrouping.maxMessagesPerExchange)
+        XCTAssertTrue(capped.messages.contains { $0.message.id == hero.message.id })
+    }
+
     func testFullFixtureBuildCreatesReadyConversationWindows() throws {
         let bundle = Bundle(for: type(of: self))
         guard let chatURL = bundle.url(forResource: "chat", withExtension: "db") else {

@@ -32,6 +32,10 @@ struct SpotlightPanel: View {
     /// when the user wanted a literal keyword search).
     @State private var mode: SearchField.Mode = .keyword
 
+    /// Ask-mode exchange rows the user has expanded inline (keyed by the
+    /// exchange's hero message ROWID). Reset whenever a new answer arrives.
+    @State private var expandedAskExchangeIDs: Set<Int64> = []
+
     /// Cached NL view model. Built on first toggle into `ask` mode
     /// (lazy — see `nlSearchViewModelProvider`).
     @State private var nlViewModel: NLSearchViewModel?
@@ -646,6 +650,9 @@ struct SpotlightPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // A new answer means new exchanges — collapse any expansion left
+            // over from the previous question.
+            .onChange(of: nl.result) { _, _ in expandedAskExchangeIDs = [] }
         } else {
             // Provider returned nil — degrade gracefully.
             VStack(spacing: Space.md) {
@@ -735,8 +742,26 @@ struct SpotlightPanel: View {
                     )
             }
 
-            // Hero candidate (if any) — click to reveal.
-            if let hero = result.hero {
+            // Distinct exchanges (hybrid/conflict retrieval): one row per
+            // MOMENT, click to expand the exchange inline. Revealing in
+            // Messages.app stays exclusively on the explicit deep-link
+            // control inside each row (the existing GUID path).
+            if !result.exchanges.isEmpty {
+                askExchangeRow(exchange: result.exchanges[0], isHero: true)
+                if result.exchanges.count > 1 {
+                    Text("Other moments")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+                    VStack(spacing: 4) {
+                        ForEach(Array(result.exchanges.dropFirst().prefix(5))) { exchange in
+                            askExchangeRow(exchange: exchange, isHero: false)
+                        }
+                    }
+                }
+            } else if let hero = result.hero {
+                // Hero candidate (flat/legacy answers) — click to reveal.
                 askCandidateRow(result: hero, isHero: true)
             } else if (result.explanation?.isEmpty ?? true) {
                 // No hero AND no textual answer — the agent genuinely found
@@ -771,8 +796,9 @@ struct SpotlightPanel: View {
                 )
             }
 
-            // Additional candidates.
-            if result.candidates.count > 1 {
+            // Additional candidates — flat/legacy answers only. Exchange
+            // answers already show their context inside each expanded row.
+            if result.exchanges.isEmpty, result.candidates.count > 1 {
                 Text("Other matches")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
@@ -890,6 +916,145 @@ struct SpotlightPanel: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    /// One distinct exchange (a conversational moment) as a clickable row.
+    /// CLICK = expand inline: the exchange's messages render chronologically
+    /// below the header, capped by the retrieval layer (no unbounded
+    /// history). Opening Messages.app remains DEEP-LINK ONLY via the
+    /// explicit arrow control, which routes through the same
+    /// `revealMessageFromAsk` GUID path candidate rows use — expansion never
+    /// adds a new way of opening Messages.
+    private func askExchangeRow(exchange: MessageExchange, isHero: Bool) -> some View {
+        let expanded = expandedAskExchangeIDs.contains(exchange.id)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: Space.sm) {
+                Button {
+                    withAnimation(.bmDefault) {
+                        if expanded {
+                            expandedAskExchangeIDs.remove(exchange.id)
+                        } else {
+                            expandedAskExchangeIDs.insert(exchange.id)
+                        }
+                    }
+                } label: {
+                    HStack(alignment: .top, spacing: Space.sm) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(exchange.hero.senderName)
+                                    .font(.subheadline.weight(.semibold))
+                                if !exchange.hero.partnerName.isEmpty,
+                                   exchange.hero.partnerName != exchange.hero.senderName {
+                                    Text("·")
+                                        .foregroundStyle(.tertiary)
+                                    Text(exchange.hero.partnerName)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(askTimestampLabel(exchange.hero.message.date))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text(exchange.hero.message.body)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(expanded ? 6 : 2)
+                            if exchange.messages.count > 1 {
+                                Text(expanded
+                                     ? "Hide exchange"
+                                     : "Show this exchange · \(exchange.messages.count) messages")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(isHero ? Color.purple : Color.secondary)
+                            }
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 0 : -90))
+                            .padding(.top, 3)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                // The existing reveal affordance — the ONLY route into
+                // Messages.app, unchanged deep-link path.
+                Button {
+                    if let guid = exchange.hero.message.guid {
+                        revealMessageFromAsk(messageGUID: guid)
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.caption)
+                        .foregroundStyle(isHero ? Color.purple : Color.secondary)
+                        .padding(.top, 2)
+                }
+                .buttonStyle(.plain)
+                .help("Open this moment in Messages")
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    ForEach(exchange.messages, id: \.message.id) { member in
+                        askExchangeMessageRow(
+                            member,
+                            isAnchor: member.message.id == exchange.hero.message.id
+                        )
+                    }
+                }
+                .padding(.top, Space.sm)
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .fill(isHero ? Color.purple.opacity(0.08) : Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                .strokeBorder(
+                    isHero ? Color.purple.opacity(0.18) : Color.hairline,
+                    lineWidth: 0.5
+                )
+        )
+    }
+
+    /// One message inside an expanded exchange — plain in-app display (no
+    /// click action; reveal lives on the row's explicit control).
+    private func askExchangeMessageRow(
+        _ result: MessageSearch.Result,
+        isAnchor: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(result.senderName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isAnchor ? Color.purple : Color.secondary)
+                    Text(askTimestampLabel(result.message.date))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+                Text(result.message.body)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(6)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+                .fill(isAnchor ? Color.purple.opacity(0.06) : Color.primary.opacity(0.03))
+        )
     }
 
     /// Compact trace list — caption-sized rows showing the agent's

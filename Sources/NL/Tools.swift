@@ -64,25 +64,125 @@ public struct HybridMessageRetrievalRequest: Sendable, Equatable {
     }
 }
 
+/// One distinct conversational moment in a retrieval answer: a hero message
+/// plus the short chronological exchange that surrounds it. The UI renders one
+/// row per exchange and expands it in-app on click; revealing in Messages.app
+/// stays on the existing deep-link path only.
+public struct MessageExchange: Sendable, Equatable, Identifiable {
+    /// The best-ranked message of this exchange — what the row displays.
+    public let hero: MessageSearch.Result
+    /// The exchange's messages in chronological order (hero included), capped
+    /// at `MessageExchangeGrouping.maxMessagesPerExchange`.
+    public let messages: [MessageSearch.Result]
+
+    public var id: Int64 { hero.message.id }
+
+    public init(hero: MessageSearch.Result, messages: [MessageSearch.Result]) {
+        self.hero = hero
+        self.messages = messages
+    }
+}
+
+/// Pure diversity pass over ranked candidate windows. Retrieval can return
+/// several overlapping/adjacent windows of ONE conversation; users asked for
+/// the top-N results to be N DIFFERENT moments. Two candidates in the same
+/// chat whose heroes are within two hours are the same moment (the conflict
+/// retriever's distinct-two-hour-moment precedent); the runner-up's messages
+/// stay attached to the winning exchange instead of occupying a result slot.
+public enum MessageExchangeGrouping {
+    /// Same-chat heroes at most this far apart describe one exchange.
+    public static let sameMomentInterval: TimeInterval = 2 * 60 * 60
+    /// Expansion shows the exchange, not unbounded history.
+    public static let maxMessagesPerExchange = 12
+
+    /// One ranked retrieval window (best first) awaiting grouping.
+    public struct Candidate: Sendable {
+        public let hero: MessageSearch.Result
+        public let messages: [MessageSearch.Result]
+
+        public init(hero: MessageSearch.Result, messages: [MessageSearch.Result]) {
+            self.hero = hero
+            self.messages = messages
+        }
+    }
+
+    public static func distinctExchanges(
+        from candidates: [Candidate],
+        maxExchanges: Int,
+        sameMomentInterval: TimeInterval = sameMomentInterval,
+        maxMessagesPerExchange: Int = maxMessagesPerExchange
+    ) -> [MessageExchange] {
+        struct Accumulator {
+            let hero: MessageSearch.Result
+            var messagesByID: [Int64: MessageSearch.Result]
+        }
+        var accumulators: [Accumulator] = []
+        for candidate in candidates {
+            let chatID = candidate.hero.message.chatRowID
+            let heroDate = candidate.hero.message.date
+            if let index = accumulators.firstIndex(where: { accumulator in
+                accumulator.hero.message.chatRowID == chatID
+                    && abs(accumulator.hero.message.date.timeIntervalSince(heroDate))
+                        <= sameMomentInterval
+            }) {
+                // Same moment as an already-selected exchange: attach the
+                // runner-up's surrounding messages, keep the stronger hero.
+                for result in candidate.messages {
+                    accumulators[index].messagesByID[result.message.id] = result
+                }
+            } else if accumulators.count < maxExchanges {
+                var byID: [Int64: MessageSearch.Result] = [:]
+                for result in candidate.messages { byID[result.message.id] = result }
+                byID[candidate.hero.message.id] = candidate.hero
+                accumulators.append(Accumulator(hero: candidate.hero, messagesByID: byID))
+            }
+        }
+        return accumulators.map { accumulator in
+            var messages = accumulator.messagesByID.values
+                .sorted { $0.message.date < $1.message.date }
+            if messages.count > maxMessagesPerExchange {
+                // Cap around the hero so the retained slice is the moment the
+                // user clicked, not the merged window's earliest tail.
+                let heroIndex = messages.firstIndex {
+                    $0.message.id == accumulator.hero.message.id
+                } ?? 0
+                let lower = max(
+                    0,
+                    min(heroIndex - maxMessagesPerExchange / 2,
+                        messages.count - maxMessagesPerExchange)
+                )
+                messages = Array(messages[lower..<(lower + maxMessagesPerExchange)])
+            }
+            return MessageExchange(hero: accumulator.hero, messages: messages)
+        }
+    }
+}
+
 public struct HybridMessageRetrievalOutcome: Sendable {
     public let candidates: [MessageSearch.Result]
     public let windowCount: Int
     public let exactCandidateCount: Int
     public let expandedCandidateCount: Int
     public let denseCandidateCount: Int
+    /// Distinct conversational moments, best first. Empty when the producer
+    /// predates exchange grouping (mocks) — consumers fall back to the flat
+    /// `candidates` list.
+    public let exchanges: [MessageExchange]
 
     public init(
         candidates: [MessageSearch.Result],
         windowCount: Int,
         exactCandidateCount: Int,
         expandedCandidateCount: Int,
-        denseCandidateCount: Int
+        denseCandidateCount: Int,
+        exchanges: [MessageExchange] = []
     ) {
         self.candidates = candidates
         self.windowCount = windowCount
         self.exactCandidateCount = exactCandidateCount
         self.expandedCandidateCount = expandedCandidateCount
         self.denseCandidateCount = denseCandidateCount
+        self.exchanges = exchanges
     }
 }
 

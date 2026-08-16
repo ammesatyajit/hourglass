@@ -68,6 +68,12 @@ public struct NLQueryResult: Sendable, Equatable {
     /// Capped at 50 in the agent to keep the disclosure UI manageable.
     public let candidates: [MessageSearch.Result]
 
+    /// Distinct conversational moments (hybrid/conflict retrieval), best
+    /// first — one entry per exchange with its surrounding messages attached.
+    /// Empty for aggregate answers and legacy literal search; the UI then
+    /// renders the flat `candidates` list as before.
+    public let exchanges: [MessageExchange]
+
     /// The reasoning trace, oldest step first. The dashboard renders this
     /// as a numbered list.
     public let trace: [NLTraceStep]
@@ -101,7 +107,8 @@ public struct NLQueryResult: Sendable, Equatable {
         plan: PlanJSON?,
         fallbackQuery: String,
         explanation: String? = nil,
-        degradedToFallback: Bool = false
+        degradedToFallback: Bool = false,
+        exchanges: [MessageExchange] = []
     ) {
         self.hero = hero
         self.candidates = candidates
@@ -110,5 +117,6 @@ public struct NLQueryResult: Sendable, Equatable {
         self.fallbackQuery = fallbackQuery
         self.explanation = explanation
         self.degradedToFallback = degradedToFallback
+        self.exchanges = exchanges
     }
 }

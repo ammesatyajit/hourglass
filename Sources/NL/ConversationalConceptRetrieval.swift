@@ -32,6 +32,9 @@ struct ConversationalConceptRequest: Sendable, Equatable {
 
 struct ConversationalConceptOutcome: Sendable {
     let candidates: [MessageSearch.Result]
+    /// Distinct two-hour moments, best first, each with its scored exchange
+    /// attached — the same shape hybrid retrieval returns.
+    let exchanges: [MessageExchange]
     let fallbackQuery: String
     let scopeLabel: String
     let windowCount: Int
@@ -516,23 +519,35 @@ extension NLAgent {
             if selectedWindows.count == 5 { break }
         }
 
+        // Same grouped-exchange shape as hybrid retrieval. The windows are
+        // already two-hour-distinct, so this is a pass-through wrap plus the
+        // shared per-exchange message cap.
+        let exchanges = MessageExchangeGrouping.distinctExchanges(
+            from: selectedWindows.map {
+                MessageExchangeGrouping.Candidate(hero: $0.anchor, messages: $0.messages)
+            },
+            maxExchanges: selectedWindows.count
+        )
+
         var ordered: [MessageSearch.Result] = []
         var seen = Set<Int64>()
         func append(_ result: MessageSearch.Result) {
             if seen.insert(result.message.id).inserted { ordered.append(result) }
         }
 
-        // Keep the strongest evidence message first (the UI's hero), then
-        // show the exact short exchange that was scored as a unit.
-        for window in selectedWindows {
-            append(window.anchor)
-            for result in window.messages { append(result) }
+        // Flat candidates lead with one hero per distinct moment (so a top-N
+        // consumer shows N different moments), then each exchange's short
+        // scored context follows.
+        for exchange in exchanges { append(exchange.hero) }
+        for exchange in exchanges {
+            for result in exchange.messages { append(result) }
             if ordered.count >= maxCandidates { break }
         }
 
         let scopeLabel = resolvedChat?.resolvedName ?? request.person
         return ConversationalConceptOutcome(
             candidates: Array(ordered.prefix(maxCandidates)),
+            exchanges: exchanges,
             fallbackQuery: query,
             scopeLabel: scopeLabel,
             windowCount: rankedWindows.count,

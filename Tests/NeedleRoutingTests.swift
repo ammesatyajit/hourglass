@@ -91,12 +91,29 @@ final class NeedleRoutingTests: XCTestCase {
                 partnerName: "Howard Rosen",
                 senderName: "Howard Rosen"
             )
+            let context = MessageSearch.Result(
+                message: Message(
+                    id: 701,
+                    guid: "hybrid-joke-context",
+                    date: Date(timeIntervalSince1970: 160),
+                    isFromMe: true,
+                    chatRowID: 9,
+                    senderHandle: nil,
+                    chatStyle: 45,
+                    chatDisplayName: nil,
+                    body: "I'm still laughing",
+                    associatedMessageType: 0
+                ),
+                partnerName: "Howard Rosen",
+                senderName: "You"
+            )
             return HybridMessageRetrievalOutcome(
                 candidates: [result],
                 windowCount: 1,
                 exactCandidateCount: 0,
                 expandedCandidateCount: 1,
-                denseCandidateCount: 1
+                denseCandidateCount: 1,
+                exchanges: [MessageExchange(hero: result, messages: [result, context])]
             )
         }
 
@@ -779,6 +796,12 @@ final class NeedleRoutingTests: XCTestCase {
         XCTAssertEqual(tools.literalCalls, 0)
         XCTAssertTrue(result.trace.contains { $0.label.contains("Hybrid retrieval") })
         XCTAssertTrue(result.trace.contains { $0.label.contains("dense candidates") })
+
+        // Grouped exchanges reach the UI so results render as distinct
+        // moments with their surrounding messages attached.
+        XCTAssertEqual(result.exchanges.count, 1)
+        XCTAssertEqual(result.exchanges.first?.hero.message.id, 700)
+        XCTAssertEqual(result.exchanges.first?.messages.map(\.message.id), [700, 701])
     }
 
     func testArgumentWithPersonUsesConflictRetrievalAndReturnsImplicitEvidence() async {
