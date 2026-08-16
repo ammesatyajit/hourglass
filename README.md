@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://hourglass-downloads.ammesatyajit.workers.dev/download/0.3.1/Hourglass.dmg"><strong>Download for macOS →</strong></a>
+  <a href="https://hourglass-downloads.ammesatyajit.workers.dev/download/0.4.0/Hourglass.dmg"><strong>Download for macOS →</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/ammesatyajit/hourglass/releases">Changelog</a>
   &nbsp;·&nbsp;

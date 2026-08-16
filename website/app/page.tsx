@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 const DOWNLOAD_URL =
-  "https://hourglass-downloads.ammesatyajit.workers.dev/download/0.3.1/Hourglass.dmg";
+  "https://hourglass-downloads.ammesatyajit.workers.dev/download/0.4.0/Hourglass.dmg";
 
 type Point = [number, number];
 type SearchMode = "keyword" | "needle";
