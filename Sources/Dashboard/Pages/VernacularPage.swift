@@ -52,7 +52,6 @@ struct VernacularPage: View {
     /// across sidebar page switches (selecting away and back does NOT re-run the
     /// 130k-message pass).
     @State private var vernacular: VernacularViewModel
-    @State private var hiddenProfileSurfaces: Set<String> = VernacularProfileHiddenStore.load()
 
     init(
         database: ChatDatabase?,
@@ -152,11 +151,7 @@ struct VernacularPage: View {
             )
         case .empty, .loaded:
             if let profile = vernacular.profile, profile.isEnabled {
-                VernacularProfileListsView(
-                    profile: profile,
-                    hiddenSurfaces: hiddenProfileSurfaces,
-                    onHide: hideProfileSurface
-                )
+                VernacularProfileListsView(profile: profile)
             } else {
                 VernMessageState(
                     icon: "quote.bubble",
@@ -165,13 +160,6 @@ struct VernacularPage: View {
                 )
             }
         }
-    }
-
-    private func hideProfileSurface(_ surface: String) {
-        var next = hiddenProfileSurfaces
-        next.insert(VernacularProfileHiddenStore.normalized(surface))
-        hiddenProfileSurfaces = next
-        VernacularProfileHiddenStore.save(next)
     }
 
     /// A first-paint placeholder for the words section while Phase 1 runs. The
@@ -384,27 +372,21 @@ private struct VernPageSection<Content: View>: View {
 /// profile flag is enabled. The people graph is driven by `SpreadProfile`.
 private struct VernacularProfileListsView: View {
     let profile: VernacularProfile
-    let hiddenSurfaces: Set<String>
-    let onHide: (String) -> Void
 
     private var visibleReclaimedWords: [VernacularProfileReclaimedWord] {
-        profile.reclaimedWords.filter { isVisible($0.surface) }
+        profile.reclaimedWords
     }
     private var visibleWords: [VernacularProfilePhrase] {
-        profile.words.filter { isVisible($0.surface) }
+        profile.words
     }
     private var visibleCircleSlang: [VernacularProfilePhrase] {
-        profile.circleSlang.filter { isVisible($0.surface) }
+        profile.circleSlang
     }
     private var visiblePhrases: [VernacularProfilePhrase] {
-        profile.phrases.filter { isVisible($0.surface) }
+        profile.phrases
     }
     private var visibleTemplates: [VernacularProfileTemplate] {
-        profile.templates.filter { isVisible($0.pattern) }
-    }
-    private var rawCount: Int {
-        profile.words.count + profile.circleSlang.count + profile.phrases.count
-            + profile.reclaimedWords.count + profile.templates.count
+        profile.templates
     }
     private var visibleCount: Int {
         visibleWords.count + visibleCircleSlang.count + visiblePhrases.count
@@ -445,8 +427,7 @@ private struct VernacularProfileListsView: View {
                                                 detail: templateDetail(item),
                                                 examples: item.examples,
                                                 pills: item.topFills.prefix(5).map { ($0.fill, $0.count) },
-                                                tint: .mint,
-                                                onHide: { onHide(item.pattern) }
+                                                tint: .mint
                                             )
                                         }
                                     }
@@ -473,8 +454,7 @@ private struct VernacularProfileListsView: View {
                                                 detail: reclaimedDetail(item),
                                                 examples: item.examples,
                                                 pills: item.topCollocationPartner.map { [($0, Int((item.collocation * 100).rounded()))] } ?? [],
-                                                tint: .yellow,
-                                                onHide: { onHide(item.surface) }
+                                                tint: .yellow
                                             )
                                         }
                                     }
@@ -528,11 +508,6 @@ private struct VernacularProfileListsView: View {
                         }
                     }
                 }
-            } else if rawCount > 0 {
-                VernProfileEmptyNote(
-                    icon: "eye.slash",
-                    text: "Everything in the profile list is hidden."
-                )
             } else {
                 VernProfileEmptyNote(
                     icon: "sparkle.magnifyingglass",
@@ -586,14 +561,9 @@ private struct VernacularProfileListsView: View {
                 subtitle: phraseSubtitle(item),
                 detail: phraseDetail(item),
                 examples: item.examples,
-                tint: tint,
-                onHide: { onHide(item.surface) }
+                tint: tint
             )
         }
-    }
-
-    private func isVisible(_ surface: String) -> Bool {
-        !hiddenSurfaces.contains(VernacularProfileHiddenStore.normalized(surface))
     }
 
     private func phraseSubtitle(_ item: VernacularProfilePhrase) -> String {
@@ -671,7 +641,6 @@ private struct VernProfileSurfaceRow: View {
     let examples: [String]
     var pills: [(String, Int)] = []
     let tint: Color
-    let onHide: () -> Void
 
     @State private var expanded = false
     @State private var hovering = false
@@ -701,21 +670,6 @@ private struct VernProfileSurfaceRow: View {
                 }
 
                 Spacer(minLength: Space.sm)
-
-                Button(action: onHide) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "eye.slash")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Hide")
-                            .font(.caption2.weight(.semibold))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, Space.sm)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.secondary.opacity(0.10)))
-                }
-                .buttonStyle(.plain)
-                .help("Hide \(title) from this profile list")
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
@@ -808,22 +762,6 @@ private struct VernProfileEmptyNote: View {
             .fill(Color.primary.opacity(0.03)))
         .overlay(RoundedRectangle(cornerRadius: Radius.large, style: .continuous)
             .strokeBorder(Color.hairline, lineWidth: 1))
-    }
-}
-
-private enum VernacularProfileHiddenStore {
-    private static let key = "vernacular.profile.hidden"
-
-    static func normalized(_ surface: String) -> String {
-        surface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    static func load(_ defaults: UserDefaults = .standard) -> Set<String> {
-        Set((defaults.stringArray(forKey: key) ?? []).map(normalized))
-    }
-
-    static func save(_ surfaces: Set<String>, defaults: UserDefaults = .standard) {
-        defaults.set(surfaces.sorted(), forKey: key)
     }
 }
 
