@@ -32,8 +32,8 @@
 //  - `revealURL(for:)` is pure — it builds (or refuses to build) a URL from a
 //    `MessageSearch.Result` plus its participant handles. Pure = testable.
 //  - `reveal(_:)` is the side-effecting wrapper that asks `revealURL` for a
-//    URL, opens it with `NSWorkspace.shared.open`, and falls back to launching
-//    Messages.app when no URL is available (group chats).
+//    URL, opens it through `openAndActivateMessages`, and falls back to
+//    activating Messages.app when no URL is available (group chats).
 //
 //  Why pass participants in: groups don't carry a usable URL identifier, and
 //  for 1:1 chats the "partner handle" lives in `chat_handle_join`, not in the
@@ -177,9 +177,30 @@ public enum MessagesReveal {
         let db = database ?? sharedDatabase
         let participants = participants(for: result, database: db)
         if let url = revealURL(for: result, participants: participants) {
-            return NSWorkspace.shared.open(url)
+            return openAndActivateMessages {
+                NSWorkspace.shared.open(url)
+            }
         }
         return openMessagesApp()
+    }
+
+    /// The single side-effect boundary for every message deep link.
+    ///
+    /// Opening a `sms:`/`imessage:` URL or sending Spotlight's GURL event can
+    /// navigate Messages while leaving another app in front. Every reveal
+    /// route therefore performs its navigation operation and then explicitly
+    /// activates Messages.app here. Keeping this sequencing in one function
+    /// prevents new clickable message surfaces from forgetting the foreground
+    /// step.
+    @discardableResult
+    @MainActor
+    static func openAndActivateMessages(
+        open: @MainActor () -> Bool,
+        activate: @MainActor () -> Bool = activateMessagesApp
+    ) -> Bool {
+        let opened = open()
+        let activated = activate()
+        return opened && activated
     }
 
     /// Bring `Messages.app` to the foreground without selecting any chat.
@@ -187,6 +208,13 @@ public enum MessagesReveal {
     /// 1:1's handle is unusable).
     @MainActor
     public static func openMessagesApp() -> Bool {
+        activateMessagesApp()
+    }
+
+    /// Launch or activate Messages without navigating away from the chat a
+    /// preceding deep link selected.
+    @MainActor
+    static func activateMessagesApp() -> Bool {
         // The system Messages bundle ID is com.apple.MobileSMS on macOS.
         // We try the bundle ID first (robust against renames in /Applications),
         // then fall back to opening the app bundle URL.

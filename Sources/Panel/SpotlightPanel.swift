@@ -130,7 +130,7 @@ struct SpotlightPanel: View {
     /// Routes through the same GUID path keyword results use; on
     /// success the panel dismisses (consistent UX with keyword opens).
     private func revealMessageFromAsk(messageGUID: String) {
-        _ = MessagesGUIDReveal.sendSpotlightOpenURL(messageGUID: messageGUID)
+        _ = MessagesGUIDReveal.reveal(messageGUID: messageGUID)
         dismiss()
     }
 
@@ -624,8 +624,8 @@ struct SpotlightPanel: View {
     ///
     /// We deliberately do NOT embed the dashboard's `NLSearchBar` view as-is:
     /// that view contains its own expandable shell, search field, and
-    /// download/first-run UI which would double-up with the panel's own
-    /// chrome. Instead the panel renders a slim purpose-built content area
+    /// expanded shell and search field, which would double-up with the panel's
+    /// own chrome. Instead the panel renders a slim purpose-built content area
     /// that talks to the same `NLSearchViewModel`.
     @ViewBuilder
     private var askContent: some View {
@@ -633,7 +633,7 @@ struct SpotlightPanel: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: Space.md) {
                     if let reason = nl.runtimeNotReadyReason {
-                        askNotReadyState(reason: reason, nl: nl)
+                        askNotReadyState(reason: reason)
                     } else if let result = nl.result {
                         askAnswerView(result: result, nl: nl)
                     } else if nl.isAsking {
@@ -814,7 +814,7 @@ struct SpotlightPanel: View {
         }
     }
 
-    private func askNotReadyState(reason: String, nl: NLSearchViewModel) -> some View {
+    private func askNotReadyState(reason: String) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             Label {
                 Text("Ask mode isn't ready")
@@ -827,83 +827,14 @@ struct SpotlightPanel: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            // The actionable bit. Without this the panel told the user to
-            // "download the model" but gave them nothing to click — the
-            // download CTA only existed on the dashboard NL bar. Now the
-            // panel drives the download itself: one click starts it, the
-            // query the user just typed is already stashed (pendingQuery),
-            // and it auto-fires once the runtime swaps to MLX.
-            switch nl.downloadState {
-            case .idle, .failed:
-                Button {
-                    nl.beginDownload()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.circle.fill")
-                        Text(nl.downloadState.isFailed
-                             ? "Retry download"
-                             : "Download model (~1 GB)")
-                            .fontWeight(.medium)
-                    }
-                    .padding(.horizontal, Space.md)
-                    .padding(.vertical, Space.sm)
-                    .background(
-                        RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
-                            .fill(Color.purple.opacity(0.18))
-                    )
-                    .foregroundStyle(.purple)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, Space.xs)
-
-            case .downloading:
-                // Live progress. `downloadProgress` ticks via the
-                // @Observable downloader, so this re-renders as bytes land.
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: nl.downloadProgress?.fraction ?? 0)
-                        .progressViewStyle(.linear)
-                        .tint(.purple)
-                    Text(Self.downloadStatusText(nl.downloadProgress))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, Space.xs)
-
-            case .ready:
-                // Container loaded — the swap + auto-fire of the stashed
-                // query is imminent; show a brief warming spinner.
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Starting up…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, Space.xs)
-            }
+            Text("Needle2 is bundled with Hourglass. Quit and reopen the app; no model download is required.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Text("You can keep using keyword search — press Tab or ESC.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
-    }
-
-    /// "412 MB / 1.0 GB · 8 MB/s · ~1m left" — compact one-liner under the
-    /// download bar. Falls back gracefully when totals/ETA aren't known yet.
-    private static func downloadStatusText(_ p: ModelDownloadProgress?) -> String {
-        guard let p, p.totalBytes > 0 else { return "Starting download…" }
-        let bcf = ByteCountFormatter()
-        bcf.countStyle = .file
-        let done = bcf.string(fromByteCount: p.bytesDownloaded)
-        let total = bcf.string(fromByteCount: p.totalBytes)
-        var parts = ["\(done) / \(total)"]
-        if p.bytesPerSecond > 0 {
-            parts.append("\(bcf.string(fromByteCount: Int64(p.bytesPerSecond)))/s")
-        }
-        if let eta = p.etaSeconds, eta > 0, eta.isFinite {
-            let m = Int(eta) / 60, s = Int(eta) % 60
-            parts.append(m > 0 ? "~\(m)m left" : "~\(s)s left")
-        }
-        return parts.joined(separator: " · ")
     }
 
     /// Render one candidate (a `MessageSearch.Result`) as a clickable

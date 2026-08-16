@@ -84,11 +84,7 @@ public enum MessagesGUIDReveal {
         // loads the transcript around that message, and scrolls + highlights.
         //
         // Confirmed end-to-end on macOS 26.5 against the user's real chat.db.
-        if sendSpotlightOpenURL(messageGUID: messageGUID) {
-            // The GURL Apple Event makes Messages load + highlight the message
-            // but does NOT bring the app forward — with another app focused,
-            // the reveal happened invisibly behind it. Activate explicitly.
-            _ = MessagesReveal.openMessagesApp()
+        if reveal(messageGUID: messageGUID) {
             return .scrolledToMessage(viaHighlight: true)
         }
 
@@ -97,10 +93,22 @@ public enum MessagesGUIDReveal {
         // the app must never take control of Messages. Deep links only.)
         guard let chatID = chatIdentifier(fromChatGUID: chatGUID),
               let openURL = chatOpenURL(forChatIdentifier: chatID),
-              NSWorkspace.shared.open(openURL) else {
+              MessagesReveal.openAndActivateMessages(open: {
+                  NSWorkspace.shared.open(openURL)
+              }) else {
             return .chatOpenFailed
         }
         return .chatOpenedOnly
+    }
+
+    /// Spotlight-grade message navigation for callers that only carry the
+    /// message GUID. The shared reveal boundary always foregrounds Messages
+    /// after sending the Apple Event.
+    @discardableResult
+    public static func reveal(messageGUID: String) -> Bool {
+        MessagesReveal.openAndActivateMessages {
+            sendSpotlightOpenURL(messageGUID: messageGUID)
+        }
     }
 
     // MARK: - Spotlight-equivalent deep link
@@ -117,7 +125,7 @@ public enum MessagesGUIDReveal {
     /// would still return `true` here but visibly do nothing, in which case
     /// the legacy AX fallback above kicks in via a follow-up reveal call.
     @MainActor
-    static func sendSpotlightOpenURL(messageGUID: String) -> Bool {
+    private static func sendSpotlightOpenURL(messageGUID: String) -> Bool {
         // The GUID is opaque UUID-style ASCII; no escaping needed beyond
         // defensive quote-escape.
         let safeGUID = messageGUID.replacingOccurrences(of: "\"", with: "")

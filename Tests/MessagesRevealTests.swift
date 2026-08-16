@@ -224,6 +224,41 @@ final class MessagesRevealTests: XCTestCase {
         )
     }
 
+    // MARK: - Shared foreground boundary
+
+    @MainActor
+    func testOpenAndActivateRunsNavigationThenForegroundExactlyOnce() {
+        var calls: [String] = []
+        let result = MessagesReveal.openAndActivateMessages(
+            open: {
+                calls.append("open")
+                return true
+            },
+            activate: {
+                calls.append("activate")
+                return true
+            }
+        )
+
+        XCTAssertTrue(result)
+        XCTAssertEqual(calls, ["open", "activate"])
+    }
+
+    @MainActor
+    func testOpenAndActivateStillForegroundsWhenNavigationFails() {
+        var activated = false
+        let result = MessagesReveal.openAndActivateMessages(
+            open: { false },
+            activate: {
+                activated = true
+                return true
+            }
+        )
+
+        XCTAssertFalse(result)
+        XCTAssertTrue(activated)
+    }
+
     // MARK: - Helpers
 
     /// Build a `Message` with sensible defaults so tests only need to set the

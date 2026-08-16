@@ -20,9 +20,7 @@ private let nlBarLogger = Logger(
 ///   `MenuBarExtra`, but the click handlers route through here).
 /// - Open the Dashboard on cold launch and when the Dock icon is clicked
 ///   while no windows are visible.
-/// - Own the singleton `ModelDownloader` for the NL search agent (so the
-///   download survives dashboard close/re-open cycles) and pick the right
-///   `LLMRuntime` (MLX when downloaded, stub otherwise).
+/// - Own the lightweight, bundled Needle2 AI Search runtime.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let viewModel = SearchViewModel()
@@ -69,34 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nlSearchViewModelProvider: { [weak self] in self?.nlSearchViewModel }
     )
 
-    /// One downloader instance for the entire app lifetime. Owns the loaded
-    /// MLX `ModelContainer` post-download. Constructed eagerly because:
-    ///   - probing for an existing cached copy is cheap (file existence
-    ///     check) and lets us start in the `.ready` state without any
-    ///     user interaction;
-    ///   - holding the @Observable instance from launch means the NL bar's
-    ///     SwiftUI view picks up the same instance no matter when the user
-    ///     opens the dashboard.
-    ///
-    /// `private(set) var` (not `let`) so we can REBUILD it when the user
-    /// switches the NL "quality mode" in Settings — a fresh `ModelDownloader`
-    /// reads the newly-selected model id at construction. See
-    /// `applyModelQualityChangeIfNeeded()`.
-    private(set) var modelDownloader = ModelDownloader()
-    /// Observation token that watches the downloader state for the
-    /// download-completed transition. When it flips to `.ready` we
-    /// invalidate the cached `_nlAgent` so the next access builds a fresh
-    /// MLX-backed agent.
-    private var downloaderObserver: NSObjectProtocol?
-    /// Observation token for `UserDefaults.didChangeNotification` — fires the
-    /// quality-mode reconciliation when the Settings picker writes a new mode.
-    private var defaultsObserver: NSObjectProtocol?
-
-    /// Lazy NL search agent. Built only when the dashboard's NL bar is
-    /// first interacted with so initial startup stays as cheap as the
-    /// pre-NL build. Runtime selection: MLX when the model downloader is
-    /// ready, stub otherwise (so the bar still works while the download is
-    /// in-flight, just with canned demo answers).
+    /// Lazy NL search agent. Built only when AI Search is first used so
+    /// ordinary app startup does not initialize even the small router.
     private var _nlAgent: NLAgent?
     var nlAgent: NLAgent? {
         // Need the chat.db handle from the existing search view model.
@@ -130,34 +102,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return agent
     }
 
-    /// Gated AI labeler for the Vernacular Insights panel (Layer 4). Returns a
-    /// real MLX-backed labeler ONLY when the model is downloaded + loaded;
-    /// nil otherwise (the gate — the panel then shows Layer-1/2/3 results with
-    /// no AI labels, exactly like the NL bar's "model not ready" path).
-    ///
-    /// Crucially this does NOT auto-load the model and is a no-op under
-    /// XCTest: if `modelDownloader.modelContainer` is nil (which it always is
-    /// under the test host, where the eager warmup is `underTest`-guarded), we
-    /// return nil and never touch MLX. So the Vernacular panel never triggers
-    /// the XCTest-host model-load hang.
+    /// Vernacular stays on its deterministic layers. AI Search no longer
+    /// keeps a prose model resident just to label this optional panel.
     var vernacularLabeler: (any VernacularAILabeling)? {
-        guard case .ready = modelDownloader.state,
-              let container = modelDownloader.modelContainer else {
-            return nil
-        }
-        return LLMVernacularLabeler(runtime: MLXRuntime(container: container, modelID: modelDownloader.modelID))
+        nil
     }
 
-    /// Picks the best runtime for the current `modelDownloader.state`:
-    ///   - `.ready` + a loaded container → `MLXRuntime`
-    ///   - everything else → `StubLLMRuntime`
-    /// Factored out so tests can exercise the selection logic without
-    /// invoking the full Application lifecycle.
+    /// Production AI Search always uses the bundled Needle2 router. There is
+    /// no model download, cache warm-up, or Qwen memory-map on app launch.
     func selectRuntime() -> LLMRuntime {
-        // OPT-IN Cactus branch (default OFF). Strictly gated on the
-        // `nl.runtime.cactus` UserDefaults flag — when unset (the default),
-        // this is skipped entirely and the existing MLX/Stub logic below is
-        // unchanged. Enable with:
+        // Keep the existing Cactus experiment available behind its explicit
+        // benchmarking flag. It is never selected in normal operation.
+        // Enable with:
         //   defaults write com.satyajit.hourglass nl.runtime.cactus -bool true
         //   defaults write com.satyajit.hourglass nl.cactus.modelPath -string /abs/path/to/cactus-model-dir
         // CactusRuntime degrades safely (isReady=false, throws rather than
@@ -168,27 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nlBarLogger.notice("selectRuntime: Cactus opt-in flag set → CactusRuntime")
             return CactusRuntime()
         }
-        if case .ready = modelDownloader.state,
-           let container = modelDownloader.modelContainer {
-            // Hand the runtime the actual model id so it picks the correct
-            // chat-template family (Qwen3 → enable_thinking; Qwen2.5 → none)
-            // and the right "Powered by …" label.
-            return MLXRuntime(container: container, modelID: modelDownloader.modelID)
-        }
-        // We hit this branch in two real-world cases:
-        //   1. Cold launch on a machine that's never downloaded the model
-        //      (state == .idle, container == nil): the stub answers the
-        //      canned queries while the download progresses.
-        //   2. Cold launch on a machine where the cache directory exists
-        //      but no model has been loaded yet (state == .ready,
-        //      container == nil): we'd still need the container. The first
-        //      MLX call would have to trigger a load, which we don't want
-        //      to do synchronously on the LLM hot path. Stub for now;
-        //      `beginDownload()` will populate the container.
-        //
-        // Both fall through to the stub cleanly. The agent's fallback path
-        // means the user gets *something* either way.
-        return StubLLMRuntime()
+        return Needle2Runtime()
     }
 
     /// Shared NLSearchViewModel for the dashboard's NL bar. Lazy for the
@@ -204,41 +140,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nlBarLogger.notice("nlSearchViewModel getter: returning nil (no agent)")
             return nil
         }
-        let vm = NLSearchViewModel(agent: agent, modelDownloader: modelDownloader)
+        let vm = NLSearchViewModel(agent: agent)
         _nlSearchViewModel = vm
         nlBarLogger.info("nlSearchViewModel getter: BUILT new VM")
-        // If the model is already on disk at launch time, kick off a load
-        // so the runtime gets the MLX container without the user
-        // explicitly clicking Download. The download path no-ops the
-        // network and goes straight to a memory-map (a few seconds).
-        //
-        // GUARD under XCTest: the unit tests are HOSTED in this app, so the
-        // test runner launches it and the Dashboard auto-opens, which reads
-        // this getter (the NL bar). Once a model is cached on the machine
-        // (937 MB Qwen3), an unguarded auto-load here memory-maps the
-        // weights + compiles Metal shaders DURING host launch and blows
-        // past the test runner's connection timeout → "test runner hung
-        // before establishing connection", hanging the ENTIRE suite. The
-        // bug is latent: it only bites after a model is cached (which is
-        // why earlier runs were green). Matches the same guard on the
-        // eager warmup in applicationDidFinishLaunching. The opt-in MLX
-        // integration/bench tests call `beginDownload` explicitly, so
-        // guarding only this AUTO-fire leaves them functional.
-        let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || ProcessInfo.processInfo.environment["XCInjectBundleInto"] != nil
-        if !underTest, modelDownloader.isModelCached, modelDownloader.modelContainer == nil {
-            modelDownloader.beginDownload()
-        }
         return vm
     }
 
-    /// Terminate guard for the MLX shutdown race. The observed quit-time crash was
-    /// EXC_BAD_ACCESS inside MLX's C++ static destructors (`mlx::core::scheduler`
-    /// teardown / `CompilerCache`) running concurrently with a still-live inference
-    /// thread when `exit()` fired. If an NL inference is in flight we cancel it and
-    /// await its unwind (bounded) BEFORE allowing termination, so MLX is idle when
-    /// the statics are destroyed. Vernacular no longer touches MLX (Phase 2 gated
-    /// off), so the NL search bar is the only in-flight MLX path; idle → no-op.
+    /// Let any in-flight local routing call unwind before process teardown.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let vm = _nlSearchViewModel else { return .terminateNow }
         Task { @MainActor in
@@ -271,14 +179,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // This path changes NO NL-search behaviour/logic; it only OBSERVES the
         // agent over the real runtime + real chat.db to capture an exact
         // current-state baseline. ReAct takes precedence if both are set.
-        if let evalQuery = ProcessInfo.processInfo.environment["HOURGLASS_NL_EVAL_REACT"] {
-            runHeadlessNLEval(query: evalQuery, mode: .react)
-            return
-        }
-        if let evalQuery = ProcessInfo.processInfo.environment["HOURGLASS_NL_EVAL"] {
-            runHeadlessNLEval(query: evalQuery, mode: .singleShot)
-            return
-        }
         // HEADLESS QUERYSPEC-EMISSION PROBE — answers the semantic-layer
         // feasibility question empirically: can the on-device 4B emit a VALID +
         // CORRECT dims/metrics/filters QuerySpec? Loads the SAME cached MLX
@@ -286,14 +186,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // QuerySpec system prompt + each "||"-separated query and prints the
         // RAW model output (lines prefixed `QSPROBE::`) for offline scoring.
         // Env-var-gated; a normal launch never reaches this.
-        if let probe = ProcessInfo.processInfo.environment["HOURGLASS_QUERYSPEC_PROBE"] {
-            runQuerySpecProbe(queriesRaw: probe)
-            return
-        }
         // HEADLESS KEYWORD-SEARCH probe — model-free (no MLX load), pure SQL.
         // Runs the exact engine the Spotlight panel uses and prints the result
         // count + top rows, so search bugs (e.g. curly-apostrophe phrase
         // mismatch) can be verified without driving the GUI.
+        if let queries = ProcessInfo.processInfo.environment["HOURGLASS_HYBRID_EVAL"] {
+            runHeadlessHybridEval(queriesRaw: queries)
+            return
+        }
         if let q = ProcessInfo.processInfo.environment["HOURGLASS_SEARCH_EVAL"] {
             Task { @MainActor in
                 _ = viewModel.retryOpenIfNeeded()
@@ -326,49 +226,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.panelController.toggle()
         }
 
-        // Watch the downloader so that when the model becomes available we
-        // invalidate the cached agent. The next `nlAgent` access will build
-        // a fresh MLX-backed agent.
-        observeDownloaderForRuntimeSwap()
-
-        // Watch UserDefaults for the NL quality-mode toggle (Settings →
-        // General → "Answer quality"). When the persisted mode no longer
-        // matches the live downloader's model id, rebuild the downloader (so
-        // it points at the newly-selected repo) and invalidate the cached
-        // agent/VM. The didChangeNotification can fire off other prefs too —
-        // the reconciliation is a cheap no-op when the model id is unchanged.
-        defaultsObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.applyModelQualityChangeIfNeeded()
-            }
-        }
-
-        // L1 (NL race fix): eagerly kick off `beginDownload()` so MLX
-        // starts memory-mapping the cached weights at launch instead of
-        // waiting for first Ask-mode entry. Without this, the user can
-        // submit their first NL query before MLX is ready, falling back
-        // to `StubLLMRuntime` + the broken literal-text path (returned
-        // 44 "find" matches for the Annika argument query — see
-        // plans.md 2026-05-27 entry).
-        //
-        // We touch `modelDownloader` directly (NOT `nlSearchViewModel`)
-        // to avoid building the agent before chat.db is open. The
-        // `observeDownloaderForRuntimeSwap` task above will pick up the
-        // `.ready` transition and swap the agent the moment chat.db +
-        // MLX are both ready. Skipped under XCTest where chat.db isn't
-        // available and we don't want a background task fighting the
-        // bundle-injection handshake.
-        let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || ProcessInfo.processInfo.environment["XCInjectBundleInto"] != nil
-        if !underTest, modelDownloader.isModelCached, modelDownloader.modelContainer == nil {
-            modelDownloader.beginDownload()
-            nlBarLogger.info("applicationDidFinishLaunching: kicked off MLX memory-map warmup")
-        }
-
         // Cold launch: SwiftUI's first-declared `Window` scene auto-opens, so
         // the Dashboard is already on screen. If for some reason it isn't
         // (e.g. user reset window state), nudge it open as a safety net.
@@ -377,112 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             WindowOpener.shared.openDashboard()
-        }
-    }
-
-    /// Subscribe to the downloader's `state` so we can flip the cached
-    /// runtime as soon as the model becomes ready. We poll (rather than
-    /// KVO) because `ModelDownloader` is `@Observable` (macro-driven, not
-    /// KVO-based).
-    ///
-    /// BATTERY: this loop now TERMINATES the moment the MLX runtime is
-    /// live — it polls only while there's a transition still pending
-    /// (download running, or a loaded container we haven't swapped to
-    /// yet). Once `_nlAgent.runtime` is a real `MLXRuntime`, there is
-    /// nothing left to observe, so the loop returns and stops waking the
-    /// CPU. Previously it spun at 4 Hz for the entire life of the app
-    /// (including long after a query finished), which kept the CPU from
-    /// idling and drained battery. We also back off to 1 s polling —
-    /// model load takes seconds, so 250 ms bought no real responsiveness.
-    ///
-    /// On runtime swap, we tell the NLSearchViewModel about the new agent
-    /// so the trace footer ("Powered by …") refreshes and any pending
-    /// query that was held back during download fires automatically.
-    private func observeDownloaderForRuntimeSwap() {
-        Task { @MainActor [weak self] in
-            var lastState: ModelDownloadState = .idle
-            while !Task.isCancelled {
-                guard let self else { return }
-                // Terminal condition: MLX is live. Nothing more to watch —
-                // stop polling so the app can idle and the CPU can sleep.
-                if self._nlAgent?.runtime is MLXRuntime {
-                    return
-                }
-                let current = self.modelDownloader.state
-                let stateChanged: Bool
-                switch (lastState, current) {
-                case (.ready, .ready):
-                    // Same ready state — but if we just got a container,
-                    // that's still a transition we care about.
-                    stateChanged = (self._nlAgent?.runtime is StubLLMRuntime)
-                                   && (self.modelDownloader.modelContainer != nil)
-                default:
-                    stateChanged = lastState != current
-                }
-                if stateChanged {
-                    self.handleDownloadStateChange(to: current)
-                    lastState = current
-                }
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
-    }
-
-    private func handleDownloadStateChange(to state: ModelDownloadState) {
-        guard case .ready = state, modelDownloader.modelContainer != nil else { return }
-
-        // Force a fresh agent build with the new runtime.
-        _nlAgent = nil
-        let newAgent = nlAgent
-        if let newAgent, let vm = _nlSearchViewModel {
-            Task { @MainActor in
-                await vm.replaceAgent(newAgent)
-            }
-        }
-    }
-
-    /// Reconcile the live `ModelDownloader` with the persisted NL quality
-    /// mode. Called when UserDefaults changes (the Settings picker writes the
-    /// mode). When the selected model id differs from the downloader's current
-    /// `modelID`, we REBUILD the downloader so it targets the newly-selected
-    /// repo, tear down the cached agent + NL view model (which both captured
-    /// the OLD downloader/runtime), restart the downloader-state observer for
-    /// the new instance, and — if that model is already cached — kick off the
-    /// (memory-map) load so the runtime warms without the user re-clicking.
-    ///
-    /// No-op (cheap string compare) when the model id is unchanged, so this is
-    /// safe to invoke on every UserDefaults change.
-    func applyModelQualityChangeIfNeeded() {
-        let desiredID = NLModelPreference.currentModelID()
-        guard desiredID != modelDownloader.modelID else { return }
-
-        nlBarLogger.info("applyModelQualityChangeIfNeeded: switching model \(self.modelDownloader.modelID, privacy: .public) → \(desiredID, privacy: .public)")
-
-        // Cancel any in-flight download on the old instance so it doesn't keep
-        // mutating state after we drop it.
-        modelDownloader.cancelDownload()
-
-        // Rebuild the downloader against the newly-selected model id.
-        modelDownloader = ModelDownloader(modelID: desiredID)
-
-        // Tear down everything that captured the OLD downloader / runtime.
-        // The next `nlAgent` / `nlSearchViewModel` access rebuilds against the
-        // new downloader; an existing NL VM is dropped so it re-reads the new
-        // `modelDownloader` reference (it captured the old one as a `let`).
-        _nlAgent = nil
-        _nlSearchViewModel = nil
-
-        // Restart the state observer for the new downloader instance (the old
-        // task returns once it sees the agent is no longer an MLXRuntime).
-        observeDownloaderForRuntimeSwap()
-
-        // If the newly-selected model is already cached, start the load now so
-        // the runtime warms in the background (memory-map, no network). Guard
-        // under XCTest exactly like the other auto-load sites.
-        let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || ProcessInfo.processInfo.environment["XCInjectBundleInto"] != nil
-        if !underTest, modelDownloader.isModelCached, modelDownloader.modelContainer == nil {
-            modelDownloader.beginDownload()
         }
     }
 
@@ -501,6 +252,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showPanel() { panelController.show() }
     func closePanel() { panelController.close() }
 
+    /// Model-light end-to-end acceptance probe for the production Needle2 +
+    /// conversation-window path. Multiple queries are separated by `||`.
+    /// It waits for the schema-v2 background index, runs the exact agent entry
+    /// point used by the UI, prints real database rows, then exits.
+    private func runHeadlessHybridEval(queriesRaw: String) {
+        Task { @MainActor in
+            func emit(_ line: String) { print("HYBRIDEVAL:: \(line)"); fflush(stdout) }
+            _ = viewModel.retryOpenIfNeeded()
+            guard viewModel.database != nil else {
+                emit("FATAL chat.db unavailable"); exit(1)
+            }
+            let queries = queriesRaw.components(separatedBy: "||")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !queries.isEmpty else { emit("FATAL no queries"); exit(1) }
+
+            let waitStarted = Date()
+            let timeout: TimeInterval = 300
+            while true {
+                if let store = viewModel.indexStore,
+                   (try? store.conversationWindowsAreReady()) == true {
+                    emit(String(format: "index ready in %.2fs — %lld windows, %.1f MB",
+                                Date().timeIntervalSince(waitStarted),
+                                (try? store.conversationWindowCount()) ?? 0,
+                                Double(store.sizeBytes()) / 1_048_576.0))
+                    break
+                }
+                if Date().timeIntervalSince(waitStarted) > timeout {
+                    emit("FATAL window index not ready after \(Int(timeout))s"); exit(1)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+
+            guard let agent = nlAgent else { emit("FATAL agent unavailable"); exit(1) }
+            for query in queries {
+                let started = Date()
+                let result = await agent.answerWithNeedle(userQuery: query)
+                emit(String(format: "query=\"%@\" elapsed=%.3fs results=%d",
+                            query, Date().timeIntervalSince(started), result.candidates.count))
+                for step in result.trace { emit("trace \(step.label)") }
+                for (index, candidate) in result.candidates.prefix(8).enumerated() {
+                    let body = candidate.message.body
+                        .replacingOccurrences(of: "\n", with: " ")
+                    emit("[\(index)] \(candidate.senderName) · \(candidate.partnerName): \(String(body.prefix(180)))")
+                }
+            }
+            await agent.runtime.releaseResources()
+            exit(0)
+        }
+    }
+
     // MARK: - Headless NL-search eval (diagnostic)
 
     /// Which agent entry point the headless eval exercises.
@@ -513,40 +315,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case singleShot
     }
 
-    /// Opt-in one-call reclaimedWords classifier for the headless profile bench.
-    /// This deliberately bypasses the Cactus runtime branch: Cactus has no
-    /// usable transpiled model in this app yet, so reclaimed classification
-    /// either uses the already-shipped MLX/Qwen model or falls back unfiltered.
+    /// Reclaimed-word prose classification was the final non-search consumer
+    /// of Qwen. Keep the benchmark deterministic instead of loading a second
+    /// model solely for this optional diagnostic.
     private func prepareHeadlessPanelBenchReclaimedRuntime(
         emit: @escaping @Sendable (String) -> Void
     ) async -> (any LLMRuntime)? {
-        emit("reclaimed.llm.model id=\(modelDownloader.modelID) cached=\(modelDownloader.isModelCached)")
-        guard modelDownloader.isModelCached else {
-            emit("reclaimed.llm.skip model is NOT cached; leaving reclaimedWords unfiltered")
-            return nil
-        }
-
-        modelDownloader.beginDownload()
-        let loadTimeout: TimeInterval = 180
-        let loadStart = Date()
-        while true {
-            switch modelDownloader.state {
-            case .ready where modelDownloader.modelContainer != nil:
-                guard let container = modelDownloader.modelContainer else { return nil }
-                emit(String(format: "reclaimed.llm.model READY in %.1fs", Date().timeIntervalSince(loadStart)))
-                return MLXRuntime(container: container, modelID: modelDownloader.modelID)
-            case .failed(let reason):
-                emit("reclaimed.llm.skip model load failed: \(reason)")
-                return nil
-            case .idle, .downloading, .ready:
-                break
-            }
-            if Date().timeIntervalSince(loadStart) > loadTimeout {
-                emit("reclaimed.llm.skip model load timed out after \(Int(loadTimeout))s; leaving reclaimedWords unfiltered")
-                return nil
-            }
-            try? await Task.sleep(for: .milliseconds(250))
-        }
+        emit("reclaimed.llm.skip Qwen runtime removed; leaving reclaimedWords unfiltered")
+        return nil
     }
 
     /// Headless 2-PANEL LOAD BENCHMARK, gated behind `HOURGLASS_PANEL_BENCH`.
@@ -1110,6 +886,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return obj[key] as? String
     }
 
+    #if HOURGLASS_MLX_DIAGNOSTICS
+    /// Legacy MLX-only diagnostics. These remain as source documentation but
+    /// are not compiled into the Needle2-only app target.
     /// HEADLESS QUERYSPEC-EMISSION PROBE (see the env-var hook in
     /// `applicationDidFinishLaunching`). Loads the cached MLX model and, for
     /// each "||"-separated query, sends `querySpecProbePrompt` + the query and
@@ -1311,6 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                              logCutoff: logCutoff, emit: emit)
         }
     }
+    #endif
 
     /// Shared tail of the headless NL eval — tools + agent + dump + teardown —
     /// used by BOTH runtime legs (the default MLX path and the opt-in Cactus

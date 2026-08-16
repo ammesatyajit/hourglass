@@ -235,12 +235,12 @@ public final class SearchViewModel {
                 self.ftsEngine = FTSSearcher(store: store, chatDB: chatDB, contacts: contacts)
                 let sync = IndexSync(store: store, chatDBURL: chatDB.url)
                 self.indexSync = sync
-                Task { await sync.start() }
 
                 // Kick off the appropriate first-launch action based on
                 // freshness. We do this in a Task so init returns promptly.
                 Task { [weak self] in
                     await self?.bootstrapIndexIfNeeded(store: store, chatDB: chatDB)
+                    await sync.start()
                 }
             } catch {
                 // Index file unavailable — log + stay on INSTR path.
@@ -330,8 +330,8 @@ public final class SearchViewModel {
             self.ftsEngine = FTSSearcher(store: store, chatDB: chatDB, contacts: resolvedContacts)
             let sync = IndexSync(store: store, chatDBURL: chatDB.url)
             self.indexSync = sync
-            await sync.start()
             await bootstrapIndexIfNeeded(store: store, chatDB: chatDB)
+            await sync.start()
             nlBarLogger.info("retryOpenIfNeeded: FTS5 bootstrap complete (post-retry path)")
         } catch {
             nlBarLogger.error("retryOpenIfNeeded: FTS5 bootstrap failed — \(String(describing: error), privacy: .public)")
