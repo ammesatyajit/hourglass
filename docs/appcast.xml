@@ -9,6 +9,35 @@
         <description>Hourglass updates feed.</description>
         <language>en</language>
         <item>
+            <title>Version 0.4.0</title>
+            <pubDate>Tue, 18 Aug 2026 03:08:05 +0000</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>AI search, rebuilt</h3>
+                <ul>
+                    <li><strong>New on-device engine</strong> — a tiny local router plus real conversation retrieval. No gigabyte model download, near-instant answers, fully offline.</li>
+                    <li><strong>Distinct moments</strong> — results now come from different exchanges, and each one expands to show the conversation around it.</li>
+                    <li>Date queries use your local timezone; group-scoped questions actually scope to the group.</li>
+                </ul>
+                <h3>Sharing</h3>
+                <ul>
+                    <li><strong>Share cards</strong> — leaderboard rows share a branded card with the person's photo and your message counts, pre-addressed to the person it's about.</li>
+                </ul>
+                <h3>Polish</h3>
+                <ul>
+                    <li>Smoother scrolling on Nostalgia and Vernacular.</li>
+                    <li>Vernacular vocabulary in three readable columns.</li>
+                    <li>Fixed phantom "left the chat" events and cold-launch stat mismatches.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.4.0/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="uHgKRSO6lym+2oCOctv2VzvoConGvwLffYjPfeg5YJkNEe2i4YYUqyB9bxdaZuDqhmu6pH2h2dC5EE3WbGPqCA==" length="21439627" />
+        </item>
+        <item>
             <title>Version 0.3.1</title>
             <pubDate>Thu, 11 Jun 2026 04:43:56 +0000</pubDate>
             <sparkle:version>6</sparkle:version>
