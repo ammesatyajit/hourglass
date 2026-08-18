@@ -273,48 +273,92 @@ function Hero() {
 
 const searchCopy = {
   keyword: {
-    query: "cactus from:Mom last:1y",
+    query: 'in:"Studio" reactions:>=3',
     label: "Keyword Search",
   },
   needle: {
-    query: "what did we decide about Vegas?",
+    query: "jokes from theo",
     label: "Cactus Needle 2",
   },
 } as const;
 
+/** The panel's bottom toolbar, mirroring the app's Spotlight footer. */
+function PanelFooter({ results }: { results: string }) {
+  return (
+    <div className="panel-footer">
+      <span>↵ Open in Messages</span>
+      <span>⇅ Navigate</span>
+      <span>⟲ Dismiss</span>
+      <b>⚡ {results}</b>
+    </div>
+  );
+}
+
 function KeywordResults({ ready }: { ready: boolean }) {
-  const rows = [
-    ["M", "Mom", "The little cactus finally grew a new arm 🌵", "Jun 18"],
-    ["M", "Mom", "Can you bring the cactus in before it freezes?", "Mar 02"],
-    ["M", "Mom", "That cactus place you sent looks perfect.", "Nov 14"],
+  const rows: Array<{
+    initials: string; name: string; body: string; date: string;
+    pills: Array<[string, number | null]>; selected?: boolean; media?: boolean;
+  }> = [
+    { initials: "M", name: "Maya", body: "the deadline moved AGAIN and I refuse to be sad about it 💅", date: "8/15/26, 1:26 AM", pills: [["❤️", 4], ["😂", 2]], selected: true },
+    { initials: "T", name: "Theo", body: "ok the new cut is actually insane. gallery night is BACK", date: "8/12/26, 5:47 PM", pills: [["❤️", 5], ["😂", null]] },
+    { initials: "N", name: "Noor", body: "Image", date: "8/6/26, 2:52 PM", pills: [["❤️", 6]], media: true },
+    { initials: "M", name: "Maya", body: "one of yall owns up to the glitter or nobody leaves", date: "7/29/26, 5:19 PM", pills: [["❤️", 3], ["‼️", null]] },
   ];
   return (
     <div className={`search-results ${ready ? "ready" : ""}`}>
-      {rows.map(([initials, name, message, date]) => (
-        <div className="message-result" key={`${message}-${date}`}>
-          <span className="result-avatar">{initials}</span>
-          <div><strong>{name}</strong><p>{message}</p><small>● Mom</small></div>
-          <time>{date}</time>
+      <div className="filter-chips">
+        <span className="chip chip-scope">🗨 in:&quot;Studio&quot; <i>×</i></span>
+        <span className="chip chip-react">❤ reactions:&gt;=3 <i>×</i></span>
+      </div>
+      {rows.map((row) => (
+        <div className={`message-result ${row.selected ? "selected" : ""}`} key={row.date}>
+          <span className="result-avatar">{row.initials}</span>
+          <div>
+            <strong>{row.name} <small>· 👥 Studio</small></strong>
+            <p>{row.media ? <>🖼 <em>Image</em></> : row.body}</p>
+          </div>
+          <div className="row-side">
+            <span className="pill-row">
+              {row.pills.map(([glyph, count]) => (
+                <i className="pill" key={glyph}>{glyph}{count !== null ? ` ${count}` : ""}</i>
+              ))}
+            </span>
+            <time>{row.date}</time>
+          </div>
         </div>
       ))}
+      <PanelFooter results="77 results" />
     </div>
   );
 }
 
 function NeedleResult({ ready }: { ready: boolean }) {
+  const moments: Array<[string, string, string]> = [
+    ["I swear all my brainpower goes to brainrot and terrible puns now", "5/28/24, 8:34 PM", "8 messages"],
+    ["“that knee injury is faker than our launch date” is an insane stray 💀", "10/19/25, 3:00 AM", "7 messages"],
+  ];
   return (
     <div className={`needle-result ${ready ? "ready" : ""}`}>
-      <div className="needle-route">
-        <span>N2</span><i /><span>⌕</span><p>Searching plans, dates, and the right conversation</p><b>LOCAL</b>
-      </div>
-      <div className="needle-answer">
-        <span className="needle-spark">✦</span>
-        <div>
-          <small>Cactus Needle 2 found the thread</small>
-          <p>Four nights in October. Thursday flight, Arts District hotel, brunch Saturday.</p>
-          <button type="button">3 supporting messages ↗</button>
+      <div className="moment moment-hero">
+        <div className="moment-head">
+          <strong>Theo <small>· 👥 Studio</small></strong>
+          <span>8/15/26, 2:35 AM <i>›</i> <i>↗</i></span>
         </div>
+        <p>Ain&apos;t no one wanna hear that man&apos;s jokes again bruh 💀🙏</p>
+        <button type="button" className="show-exchange">Show this exchange · 2 messages</button>
       </div>
+      <span className="moments-label">Other moments</span>
+      {moments.map(([body, date, count]) => (
+        <div className="moment" key={date}>
+          <div className="moment-head">
+            <strong>Theo <small>· 👥 Studio</small></strong>
+            <span>{date} <i>›</i> <i>↗</i></span>
+          </div>
+          <p>{body}</p>
+          <button type="button" className="show-exchange">Show this exchange · {count}</button>
+        </div>
+      ))}
+      <PanelFooter results="5 moments" />
     </div>
   );
 }
