@@ -489,6 +489,14 @@ function About() {
   );
 }
 
+/** Anonymous visit ping — one GET per page load, no cookies or identifiers.
+ *  The Worker just bumps an aggregate counter; failures are ignored. */
+function useVisitPing() {
+  useEffect(() => {
+    fetch("https://hourglass-downloads.ammesatyajit.workers.dev/visit").catch(() => {});
+  }, []);
+}
+
 function DownloadCount() {
   const [count, setCount] = useState<number | null>(null);
   useEffect(() => {
@@ -517,6 +525,7 @@ function Footer() {
 }
 
 export default function Home() {
+  useVisitPing();
   return (
     <main>
       <Header />

@@ -37,6 +37,29 @@ export default {
       });
     }
 
+    // Anonymous site-visit counter: the website pings this once per page
+    // load. Aggregate-only — no cookies, IPs, or identifiers, matching the
+    // download counters. HEAD is not counted (same rule as assets).
+    if (url.pathname === "/visit") {
+      let counted = false;
+      if (request.method === "GET" && env.COUNTS) {
+        try {
+          await recordEvent(env.COUNTS, "visit", "site");
+          counted = true;
+        } catch (error) {
+          console.error("Failed to record Hourglass visit event", error);
+        }
+      }
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+          "X-Hourglass-Counted": String(counted),
+        },
+      });
+    }
+
     if (url.pathname === "/stats") {
       if (!env.COUNTS) {
         return Response.json(
@@ -108,6 +131,7 @@ async function recordEvent(kv, kind, version) {
 async function readStats(kv) {
   const freshDownloads = {};
   const updates = {};
+  let siteVisits = 0;
   let cursor;
 
   do {
@@ -117,6 +141,10 @@ async function readStats(kv) {
 
     for (const key of page.keys) {
       const [, kind, version] = key.name.split(":");
+      if (kind === "visit") {
+        siteVisits += 1;
+        continue;
+      }
       const bucket = kind === "download" ? freshDownloads
         : kind === "update" ? updates
         : null;
@@ -134,14 +162,18 @@ async function readStats(kv) {
     updates,
     historicalBaseline: HISTORICAL_BASELINE,
     trackedSince: "2026-08-14",
+    // Site visits have no historical baseline — tracking starts when the
+    // /visit route deploys, so tracked and total are the same number.
     trackedTotals: {
       freshDownloads: trackedFreshDownloads,
       updates: trackedUpdates,
+      siteVisits,
     },
     totals: {
       freshDownloads:
         HISTORICAL_BASELINE.freshDownloadsEstimate + trackedFreshDownloads,
       updates: HISTORICAL_BASELINE.updatesEstimate + trackedUpdates,
+      siteVisits,
     },
     totalsIncludeEstimatedHistoricalBaseline: true,
   };

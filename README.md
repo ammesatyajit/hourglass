@@ -10,7 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://hourglass-downloads.ammesatyajit.workers.dev/download/0.4.0/Hourglass.dmg"><strong>Download for macOS →</strong></a>
+  <a href="https://hourglass-downloads.ammesatyajit.workers.dev/download/0.4.0/Hourglass.dmg"><img src="https://img.shields.io/badge/Download_for_macOS-2689ff?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS"></a>
+  &nbsp;&nbsp;
+  <a href="https://ammesatyajit.github.io/hourglass/"><img src="https://img.shields.io/badge/Website-1c1c1e?style=for-the-badge&logo=safari&logoColor=white" alt="Website"></a>
+</p>
+
+<p align="center">
+  <a href="https://ammesatyajit.github.io/hourglass/">ammesatyajit.github.io/hourglass</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/ammesatyajit/hourglass/releases">Changelog</a>
   &nbsp;·&nbsp;
