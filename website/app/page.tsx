@@ -564,7 +564,7 @@ function VernacularDemo() {
 function About() {
   return (
     <section className="about-section" id="about">
-      <div className="about-mark">SK</div>
+      <img className="about-mark" src="./headshot.jpg" alt="Satyajit Kumar" width="170" height="170" />
       <div>
         <span>ABOUT ME</span>
         <h2>Satyajit Kumar</h2>

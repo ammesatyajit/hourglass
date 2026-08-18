@@ -255,7 +255,7 @@ kbd, code { font-family: "SFMono-Regular", Consolas, monospace; }
 .shared-group.together i { background: var(--yellow); }
 
 .about-section { width: min(960px, calc(100% - 48px)); min-height: 520px; margin: 0 auto; display: grid; grid-template-columns: 190px 1fr; align-items: center; gap: 70px; }
-.about-mark { width: 170px; height: 170px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.11); border-radius: 50%; color: #91b8ff; background: radial-gradient(circle at 35% 30%, #344b76, #12151c 66%); box-shadow: 0 30px 80px rgba(0,0,0,.4); font-size: 50px; font-weight: 720; letter-spacing: -.06em; }
+.about-mark { width: 170px; height: 170px; object-fit: cover; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.11); border-radius: 50%; color: #91b8ff; background: radial-gradient(circle at 35% 30%, #344b76, #12151c 66%); box-shadow: 0 30px 80px rgba(0,0,0,.4); font-size: 50px; font-weight: 720; letter-spacing: -.06em; }
 .about-section > div:last-child > span { color: #5f626c; font: 9px "SFMono-Regular", monospace; letter-spacing: .13em; }
 .about-section h2 { margin: 12px 0 18px; font-size: clamp(44px, 6vw, 72px); letter-spacing: -.055em; }
 .about-section p { max-width: 570px; margin: 0 0 20px; color: var(--muted); font-size: 16px; line-height: 1.6; }
