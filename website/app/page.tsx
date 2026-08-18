@@ -410,6 +410,7 @@ function SearchDemo() {
         <span>01</span>
         <h2>{mode === "keyword" ? "Keyword Search" : "Natural Language Search"}</h2>
         <p>{mode === "keyword" ? "Exact when you know the words." : "For when you only remember the idea — powered by Cactus Needle 2."}</p>
+        <p className="switch-hint">Switch between Keyword and Natural Language search — just press <kbd>Tab</kbd></p>
       </div>
       <div
         className={`search-window ${mode}`}
