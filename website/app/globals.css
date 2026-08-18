@@ -70,6 +70,9 @@ kbd, code { font-family: "SFMono-Regular", Consolas, monospace; }
   display: grid;
   grid-template-columns: 220px 1fr;
   color: white;
+  /* Backdrop is scenery, not content — sit it further back so the hero
+     copy carries the page. */
+  opacity: 0.7;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 30px;
   background: #151618;

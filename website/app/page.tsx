@@ -21,21 +21,50 @@ const receivedFrequency: Point[] = [
   [92, 66], [97, 42], [100, 88],
 ];
 
+// Valley profile: high at both edges, dipping through the center, with a
+// little organic wobble so it doesn't read as a perfect parabola.
 const heroEdge: Point[] = [
-  [0, 24], [8, 42], [15, 31], [23, 65], [31, 40], [40, 78], [50, 20],
-  [59, 74], [67, 38], [76, 68], [84, 34], [92, 58], [100, 28],
+  [0, 18], [9, 28], [19, 34], [28, 48], [38, 62], [50, 72],
+  [62, 60], [71, 54], [81, 40], [91, 26], [100, 16],
 ];
+
+/// Resample a polyline through quadratic midpoint curves so corners render
+/// round instead of sharp. Returns many short segments, which keeps the
+/// existing length-walking draw animation working unchanged.
+function smoothPoints(points: Point[], steps = 12): Point[] {
+  if (points.length < 3) return points;
+  const out: Point[] = [points[0]];
+  const mid = (a: Point, b: Point): Point => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  let from = points[0];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const control = points[i];
+    const to = i === points.length - 2 ? points[points.length - 1] : mid(points[i], points[i + 1]);
+    for (let s = 1; s <= steps; s += 1) {
+      const t = s / steps;
+      const inv = 1 - t;
+      out.push([
+        inv * inv * from[0] + 2 * inv * t * control[0] + t * t * to[0],
+        inv * inv * from[1] + 2 * inv * t * control[1] + t * t * to[1],
+      ]);
+    }
+    from = to;
+  }
+  return out;
+}
 
 function ContinuousLine({
   points,
   variant,
   className = "",
+  smooth = false,
 }: {
   points: Point[];
   variant: LineVariant;
   className?: string;
+  smooth?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const shapedPoints = smooth ? smoothPoints(points) : points;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -64,7 +93,7 @@ function ContinuousLine({
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, width, height);
 
-      const coordinates = points.map(([x, y]) => ({ x: width * x / 100, y: height * y / 100 }));
+      const coordinates = shapedPoints.map(([x, y]) => ({ x: width * x / 100, y: height * y / 100 }));
       const segmentLengths = coordinates.slice(1).map((point, index) => {
         const previous = coordinates[index];
         return Math.hypot(point.x - previous.x, point.y - previous.y);
@@ -153,7 +182,7 @@ function ContinuousLine({
       observer.disconnect();
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [points, variant]);
+  }, [points, variant, smooth]);
 
   return <canvas ref={canvasRef} className={`continuous-line ${className}`} aria-hidden="true" />;
 }
@@ -237,7 +266,7 @@ function Hero() {
         </a>
       </div>
       <div className="hero-cut" aria-hidden="true" />
-      <ContinuousLine points={heroEdge} variant="edge" className="hero-edge-line" />
+      <ContinuousLine points={heroEdge} variant="edge" smooth className="hero-edge-line" />
     </section>
   );
 }
