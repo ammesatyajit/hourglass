@@ -278,7 +278,7 @@ const searchCopy = {
   },
   needle: {
     query: "jokes from theo",
-    label: "Cactus Needle 2",
+    label: "Natural Language Search",
   },
 } as const;
 
@@ -408,8 +408,8 @@ function SearchDemo() {
     <section className="search-section" id="search">
       <div className="section-intro">
         <span>01</span>
-        <h2>{mode === "keyword" ? "Keyword Search" : "Cactus Needle 2"}</h2>
-        <p>{mode === "keyword" ? "Exact when you know the words." : "Natural language when you only remember the idea."}</p>
+        <h2>{mode === "keyword" ? "Keyword Search" : "Natural Language Search"}</h2>
+        <p>{mode === "keyword" ? "Exact when you know the words." : "For when you only remember the idea — powered by Cactus Needle 2."}</p>
       </div>
       <div
         className={`search-window ${mode}`}
@@ -431,7 +431,7 @@ function SearchDemo() {
         <div className="mode-caption">
           <span className={mode === "keyword" ? "active" : ""}>Keyword</span>
           <button type="button" onClick={() => setMode((value) => value === "keyword" ? "needle" : "keyword")}>Press Tab</button>
-          <span className={mode === "needle" ? "active" : ""}>Needle 2</span>
+          <span className={mode === "needle" ? "active" : ""}>Natural Language</span>
         </div>
         {mode === "keyword" ? <KeywordResults ready={ready} /> : <NeedleResult ready={ready} />}
         <div className={`syntax-sheet ${helpOpen ? "open" : ""}`} aria-hidden={!helpOpen}>
