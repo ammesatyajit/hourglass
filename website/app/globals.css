@@ -45,6 +45,9 @@ kbd, code { font-family: "SFMono-Regular", Consolas, monospace; }
 }
 
 .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; letter-spacing: -0.02em; }
+.topbar-left { display: flex; align-items: center; gap: 14px; }
+.gh-link { display: inline-flex; align-items: center; color: rgba(255,255,255,.38); transition: color 160ms ease; }
+.gh-link:hover { color: white; }
 .brand img { border-radius: 9px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4); }
 .topbar nav { display: flex; align-items: center; gap: 8px; }
 .topbar nav a { padding: 10px 14px; border-radius: 10px; color: rgba(255, 255, 255, 0.62); font-size: 12px; font-weight: 570; transition: color 160ms ease, background 160ms ease; }
