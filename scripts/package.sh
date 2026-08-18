@@ -129,9 +129,41 @@ create-dmg \
 codesign --sign "$DEVELOPER_ID" --timestamp "$DMG_PATH"
 
 # Notarize and staple.
-xcrun notarytool submit "$DMG_PATH" \
-    --keychain-profile "$NOTARY_PROFILE" \
-    --wait
+#
+# Submit WITHOUT --wait, then poll `info`. The long-lived `--wait` process
+# reproducibly crashed with a bus error on Xcode 26.6 (twice on 2026-08-16),
+# dying AFTER upload and taking the rest of this script with it. A short
+# submit + polling loop gets the same result without a process that has to
+# survive the whole notarization wait.
+SUBMIT_OUT="$(xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE")"
+echo "$SUBMIT_OUT"
+SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/^[[:space:]]*id:/{print $2; exit}')"
+if [ -z "$SUBMISSION_ID" ]; then
+    echo "error: could not parse submission id from notarytool output" >&2
+    exit 1
+fi
+echo "Waiting on notarization ($SUBMISSION_ID)…"
+NOTARY_STATUS="In Progress"
+# 120 × 30s = up to 1 hour before giving up.
+for _ in $(seq 1 120); do
+    NOTARY_STATUS="$(xcrun notarytool info "$SUBMISSION_ID" \
+        --keychain-profile "$NOTARY_PROFILE" 2>/dev/null \
+        | awk '/status:/{$1=""; print}' | xargs)"
+    echo "  status: ${NOTARY_STATUS:-unknown}"
+    case "$NOTARY_STATUS" in
+        Accepted) break ;;
+        Invalid|Rejected)
+            echo "error: notarization $NOTARY_STATUS — fetching log:" >&2
+            xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+            exit 1 ;;
+    esac
+    sleep 30
+done
+if [ "$NOTARY_STATUS" != "Accepted" ]; then
+    echo "error: notarization did not complete within 1h (status: ${NOTARY_STATUS:-unknown})." >&2
+    echo "       Resume by hand: xcrun notarytool info $SUBMISSION_ID --keychain-profile $NOTARY_PROFILE" >&2
+    exit 1
+fi
 xcrun stapler staple "$DMG_PATH"
 
 echo ""
