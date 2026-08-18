@@ -18,6 +18,12 @@
 </p>
 
 <p align="center">
+  <!-- Fresh installs only — Sparkle auto-update traffic is counted separately
+       by the download Worker, so this number means what it says. -->
+  <img alt="downloads" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhourglass-downloads.ammesatyajit.workers.dev%2Fstats&query=%24.totals.freshDownloads&label=downloads&color=2689ff&style=flat">
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/github/v/release/ammesatyajit/hourglass?style=flat-square&color=blue" alt="Latest release" />
   <img src="https://img.shields.io/badge/macOS-15%2B-black?style=flat-square&logo=apple" alt="macOS 15+" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />

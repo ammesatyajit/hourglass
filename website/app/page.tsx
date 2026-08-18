@@ -489,12 +489,29 @@ function About() {
   );
 }
 
+function DownloadCount() {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    fetch("https://hourglass-downloads.ammesatyajit.workers.dev/stats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const n = d?.totals?.freshDownloads;
+        if (typeof n === "number" && n > 0) setCount(n);
+      })
+      .catch(() => {
+        // Counter is decorative — render nothing if stats are unreachable.
+      });
+  }, []);
+  if (count === null) return null;
+  return <> · {count.toLocaleString()} downloads</>;
+}
+
 function Footer() {
   return (
     <footer>
       <Logo small />
       <p>Nothing leaves your computer. <a href="./privacy/">See the privacy policy.</a></p>
-      <span>© 2026 Satyajit Kumar</span>
+      <span>© 2026 Satyajit Kumar<DownloadCount /></span>
     </footer>
   );
 }

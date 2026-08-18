@@ -46,8 +46,13 @@ export default {
       }
 
       const stats = await readStats(env.COUNTS);
+      // CORS: the hourglass website reads this client-side to show a small
+      // download counter. Read-only public aggregates, so * is fine.
       return Response.json(stats, {
-        headers: { "Cache-Control": "no-store" },
+        headers: {
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+        },
       });
     }
 
