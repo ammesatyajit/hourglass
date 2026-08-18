@@ -16,8 +16,6 @@
 </p>
 
 <p align="center">
-  <a href="https://ammesatyajit.github.io/hourglass/">ammesatyajit.github.io/hourglass</a>
-  &nbsp;·&nbsp;
   <a href="https://github.com/ammesatyajit/hourglass/releases">Changelog</a>
   &nbsp;·&nbsp;
   <a href="LICENSE">MIT License</a>
