@@ -24,8 +24,8 @@ const receivedFrequency: Point[] = [
 // Valley profile: high at both edges, dipping through the center, with a
 // little organic wobble so it doesn't read as a perfect parabola.
 const heroEdge: Point[] = [
-  [0, 18], [9, 28], [19, 34], [28, 48], [38, 62], [50, 72],
-  [62, 60], [71, 54], [81, 40], [91, 26], [100, 16],
+  [0, 8], [9, 20], [19, 29], [28, 50], [38, 70], [50, 86],
+  [62, 68], [71, 58], [81, 38], [91, 16], [100, 6],
 ];
 
 /// Resample a polyline through quadratic midpoint curves so corners render
