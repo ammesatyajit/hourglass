@@ -250,7 +250,15 @@ public struct MessageSearch: Sendable {
         args.append(contentsOf: toArgs)
         args.append(contentsOf: withArgs)
         args.append(contentsOf: reactionsArgs)
-        if let limit { args.append(limit) }
+        // The SQL LIMIT bounds CANDIDATES, but Swift-side refinement below
+        // (phrase AST over decoded bodies, person filter) can reject rows —
+        // a bare LIMIT of `limit` would silently DROP older matches (observed:
+        // a refinement-heavy query returned 0 of 443 real matches when capped).
+        // Overfetch 8× so dense queries stay one cheap fetch; the guard after
+        // the loop rescans unbounded if refinement couldn't fill the cap from
+        // a truncated candidate set.
+        let candidateLimit = limit.map { $0 * 8 }
+        if let candidateLimit { args.append(candidateLimit) }
 
         let rows: [Row] = try database.dbQueue.read { db in
             try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
@@ -354,6 +362,27 @@ public struct MessageSearch: Sendable {
                 chatGUID: chatGUID,
                 senderAvatar: senderAvatar
             ))
+            // Enough MATCHES — stop hydrating candidates.
+            if let limit, results.count >= limit { break }
+        }
+
+        // Correctness guard for the candidate cap: if refinement couldn't
+        // fill `limit` matches AND the candidate fetch itself was truncated,
+        // older matches may exist beyond the cap — rescan unbounded (still
+        // cancellable via the loop's checkCancellation) and trim. Dense
+        // queries never hit this; sparse ones pay the pre-cap cost but
+        // return the RIGHT rows.
+        if let limit, let candidateLimit,
+           results.count < limit, rows.count >= candidateLimit {
+            return try search(
+                phrase: phrase,
+                person: person,
+                dateRange: dateRange,
+                limit: nil,
+                now: now,
+                caseSensitive: caseSensitive,
+                order: order
+            ).prefix(limit).map { $0 }
         }
 
         // Batched post-processing — ONE SQL query each for reactions and for

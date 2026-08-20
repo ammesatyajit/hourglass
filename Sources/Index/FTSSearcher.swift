@@ -74,7 +74,14 @@ public struct FTSSearcher: Sendable {
         // Either condition forces us to delegate to the INSTR path,
         // which can handle both correctness paths. The delegation is
         // the entire fallback — we don't try to half-execute on FTS5.
-        if phraseAST.containsRegex || phraseAST.containsShortTerm(minLength: 3) {
+        //
+        //   (c) NO free text at all (operator-only queries like
+        //       `with:"Bec` mid-type, or `in:"…" reactions:>=5`) — the
+        //       MATCH degenerates to `1`, so the FTS join is pure
+        //       overhead AND it defeats chat.db's date-index early-exit:
+        //       measured 8.3s (FTS, capped) vs 0.14s (INSTR, capped) for
+        //       a live `with:"Be` keystroke over 657k rows.
+        if phraseAST.isEmpty || phraseAST.containsRegex || phraseAST.containsShortTerm(minLength: 3) {
             let fallback = MessageSearch(database: chatDB, contacts: contacts)
             return try fallback.search(
                 phrase: phrase,
@@ -219,7 +226,13 @@ public struct FTSSearcher: Sendable {
         args.append(contentsOf: toArgs)
         args.append(contentsOf: withArgs)
         args.append(contentsOf: reactionsArgs)
-        if let limit { args.append(limit) }
+        // Candidate overfetch — see MessageSearch.search: a bare LIMIT bounds
+        // candidates BEFORE the Swift-side phrase refinement below, which can
+        // silently drop older matches. Overfetch 8×; the post-loop guard
+        // rescans unbounded when refinement couldn't fill the cap from a
+        // truncated candidate set.
+        let candidateLimit = limit.map { $0 * 8 }
+        if let candidateLimit { args.append(candidateLimit) }
 
         let indexPath = store.url.path
         let rows: [Row] = try chatDB.dbQueue.writeWithoutTransaction { db in
@@ -339,6 +352,22 @@ public struct FTSSearcher: Sendable {
                 chatGUID: chatGUID,
                 senderAvatar: senderAvatar
             ))
+            // Enough MATCHES — stop hydrating candidates.
+            if let limit, results.count >= limit { break }
+        }
+
+        // Correctness guard for the candidate cap (see MessageSearch.search).
+        if let limit, let candidateLimit,
+           results.count < limit, rows.count >= candidateLimit {
+            return try search(
+                phrase: phrase,
+                person: person,
+                dateRange: dateRange,
+                limit: nil,
+                now: now,
+                caseSensitive: caseSensitive,
+                order: order
+            ).prefix(limit).map { $0 }
         }
 
         // Splice in reactions + types — same batched approach as MessageSearch.search.

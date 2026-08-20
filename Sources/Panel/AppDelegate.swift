@@ -212,6 +212,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // HEADLESS LIVE-SEARCH BENCHMARK — env-gated, diagnostic only.
+        // Quantifies the typing-lag fixes: per-query engine time UNCAPPED
+        // (the old behavior) vs capped at liveResultCap, plus how fast an
+        // uncapped scan actually STOPS once cancelled. "||"-separated
+        // queries; model-free. `SEARCHBENCH::` lines, then exit(0).
+        if let raw = ProcessInfo.processInfo.environment["HOURGLASS_SEARCH_BENCH"] {
+            Task { @MainActor in
+                _ = viewModel.retryOpenIfNeeded()
+                guard let instr = viewModel.messageSearch else {
+                    print("SEARCHBENCH:: FATAL chat.db unavailable"); exit(1)
+                }
+                let fts = viewModel.ftsSearcher
+                let queries = raw.components(separatedBy: "||")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                func ms(_ block: () throws -> Int) -> String {
+                    let t0 = Date()
+                    let n = (try? block()) ?? -1
+                    return String(format: "%7.1f ms  (%d rows)", Date().timeIntervalSince(t0) * 1000, n)
+                }
+                print("SEARCHBENCH:: engine=\(fts != nil ? "FTS available" : "INSTR only")")
+                for q in queries {
+                    print("SEARCHBENCH:: query=\(q)")
+                    if let fts {
+                        print("SEARCHBENCH::   fts   uncapped : \(ms { try fts.search(phrase: q).count })")
+                        print("SEARCHBENCH::   fts   cap 500  : \(ms { try fts.search(phrase: q, limit: SearchViewModel.liveResultCap).count })")
+                    }
+                    print("SEARCHBENCH::   instr uncapped : \(ms { try instr.search(phrase: q).count })")
+                    print("SEARCHBENCH::   instr cap 500  : \(ms { try instr.search(phrase: q, limit: SearchViewModel.liveResultCap).count })")
+                }
+                // Cancellation responsiveness: launch the WORST query
+                // uncapped, cancel 100 ms in, measure total wall time until
+                // the scan actually exits. Pre-fix this equaled the full
+                // uncapped duration; post-fix it should be ~100 ms + one
+                // 256-row hydration slice.
+                if let fts, let worst = queries.first {
+                    let t0 = Date()
+                    let task = Task.detached(priority: .userInitiated) {
+                        (try? fts.search(phrase: worst).count) ?? -1
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                    task.cancel()
+                    _ = await task.value
+                    print(String(format: "SEARCHBENCH:: cancel-at-100ms, scan exited at %.1f ms total (query=%@)",
+                                 Date().timeIntervalSince(t0) * 1000, worst))
+                }
+                fflush(stdout)
+                exit(0)
+            }
+            return
+        }
         // HEADLESS 2-PANEL LOAD BENCHMARK — env-gated, diagnostic only. Times
         // every Nostalgia + Vernacular load stage over the real chat.db and
         // dumps `BENCH::` lines, then exit(0). A normal launch (unset) is
