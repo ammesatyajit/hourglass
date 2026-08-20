@@ -266,7 +266,11 @@ public struct MessageSearch: Sendable {
         var results: [Result] = []
         results.reserveCapacity(min(rows.count, 256))
 
-        for row in rows {
+        for (rowIndex, row) in rows.enumerated() {
+            // Cooperative cancellation — same rationale as FTSSearcher: a
+            // superseded live search should stop hydrating mid-loop, not
+            // finish a result set that will be discarded.
+            if rowIndex % 256 == 255 { try Task.checkCancellation() }
             let rawDate: Int64 = row["date"]
             let date = MessageDate.date(fromRaw: rawDate)
 

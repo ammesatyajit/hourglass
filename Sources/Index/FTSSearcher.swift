@@ -240,7 +240,12 @@ public struct FTSSearcher: Sendable {
         var results: [MessageSearch.Result] = []
         results.reserveCapacity(min(rows.count, 256))
 
-        for row in rows {
+        for (rowIndex, row) in rows.enumerated() {
+            // Cooperative cancellation: hydration (attributedBody decode per
+            // row) is the expensive half of a search. When the live-typing
+            // path supersedes this search, stop wasting CPU mid-loop instead
+            // of finishing a result set nobody will look at.
+            if rowIndex % 256 == 255 { try Task.checkCancellation() }
             // Defensive optional reads — every column that COULD return
             // NULL is decoded as optional and skipped if missing, instead
             // of force-decoding and crashing the app. Bug history: we

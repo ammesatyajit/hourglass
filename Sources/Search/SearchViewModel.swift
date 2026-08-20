@@ -142,6 +142,12 @@ public final class SearchViewModel {
     /// The pending debounced search, if any.
     private var debounceTask: Task<Void, Never>?
 
+    /// The in-flight detached search, if any. Held so a newer query can
+    /// cancel the old scan mid-hydration (the engines check
+    /// `Task.checkCancellation` every 256 rows) instead of letting
+    /// discarded work finish and hog CPU behind the live search.
+    private var activeSearchTask: Task<Result<[MessageSearch.Result], Error>, Never>?
+
     // MARK: - Indexing progress type
 
     public struct IndexingProgress: Sendable, Equatable {
@@ -468,6 +474,11 @@ public final class SearchViewModel {
     /// Schedule a debounced search.
     public func searchSoon(debounceMilliseconds: Int = 150) {
         debounceTask?.cancel()
+        // Kill the in-flight search's WORK, not just its (already
+        // generation-guarded) result — a superseded scan should stop
+        // hydrating rows the moment the query changes, so keystrokes
+        // never queue up behind each other's discarded searches.
+        activeSearchTask?.cancel()
         let trimmedPhrase = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedPhrase.isEmpty && selectedContact == nil && dateRange == nil {
             searchGeneration += 1
@@ -486,6 +497,7 @@ public final class SearchViewModel {
     /// Run the search immediately.
     public func search() async {
         debounceTask?.cancel()
+        activeSearchTask?.cancel()
         guard let instrEngine else { return }
 
         searchGeneration += 1
@@ -523,7 +535,7 @@ public final class SearchViewModel {
         // is safe across the actor boundary.
         let fts = ftsEngine
 
-        let outcome: Result<[MessageSearch.Result], Error> = await Task.detached(priority: .userInitiated) {
+        let searchTask = Task.detached(priority: .userInitiated) {
             do {
                 let res: [MessageSearch.Result]
                 if useFTS, let fts {
@@ -547,7 +559,9 @@ public final class SearchViewModel {
             } catch {
                 return .failure(error)
             }
-        }.value
+        } as Task<Result<[MessageSearch.Result], Error>, Never>
+        activeSearchTask = searchTask
+        let outcome = await searchTask.value
 
         guard searchGeneration == myGen else { return }
 
@@ -555,6 +569,9 @@ public final class SearchViewModel {
         case .success(let res):
             self.results = res
         case .failure(let err):
+            // A cancelled scan is the SUCCESSOR search's doing, never an
+            // error the user should see — the newer search owns the UI now.
+            if err is CancellationError { return }
             self.results = []
             self.errorMessage = "\(err)"
         }
