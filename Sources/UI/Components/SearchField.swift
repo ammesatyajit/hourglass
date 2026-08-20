@@ -26,6 +26,9 @@ struct SearchField: View {
     /// toggle is shown — useful for browse-window contexts that don't need
     /// it. The pill sits just before the trailing clear-X button.
     var caseSensitive: Binding<Bool>? = nil
+    /// Optional sort-direction toggle (true = newest first). Rendered as a
+    /// small arrow chip beside the `Aa` control when provided.
+    var sortDescending: Binding<Bool>? = nil
     var filters: [ActiveFilter] = []
     var placeholder: String = "Search messages, people, dates…"
     /// Optional rotating example queries shown IN PLACE of the placeholder
@@ -210,6 +213,41 @@ struct SearchField: View {
                     .accessibilityLabel("Case-sensitive search")
                     .accessibilityValue(caseBinding.wrappedValue ? "On" : "Off")
                     .accessibilityAddTraits(caseBinding.wrappedValue ? .isSelected : [])
+                }
+
+                if let sortBinding = sortDescending {
+                    Button {
+                        sortBinding.wrappedValue.toggle()
+                    } label: {
+                        Image(systemName: sortBinding.wrappedValue
+                              ? "arrow.down" : "arrow.up")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(sortBinding.wrappedValue ? .secondary : Color.accentColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+                                    .fill(sortBinding.wrappedValue
+                                          ? Color.primary.opacity(0.05)
+                                          : Color.accentColor.opacity(0.18))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Radius.small, style: .continuous)
+                                    .strokeBorder(
+                                        sortBinding.wrappedValue
+                                            ? Color.hairline
+                                            : Color.accentColor.opacity(0.45),
+                                        lineWidth: 0.5
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .animation(.bmDefault, value: sortBinding.wrappedValue)
+                    .help(sortBinding.wrappedValue
+                          ? "Newest first. Click for oldest first."
+                          : "Oldest first. Click for newest first.")
+                    .accessibilityLabel("Sort order")
+                    .accessibilityValue(sortBinding.wrappedValue ? "Newest first" : "Oldest first")
                 }
 
                 if !text.isEmpty {

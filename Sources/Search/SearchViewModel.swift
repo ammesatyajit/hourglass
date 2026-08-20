@@ -82,6 +82,11 @@ public final class SearchViewModel {
     /// instead of the default ASCII-folding LIKE + 3-variant INSTR). Driven
     /// by the `Aa` toggle in the search field.
     public var caseSensitive: Bool = false
+    /// Sort direction for results. true = newest first (the default).
+    /// Flipping this reruns the search; pagination follows the direction
+    /// (the "load more" window extends toward older dates when descending,
+    /// newer dates when ascending).
+    public var sortDescending: Bool = true
 
     public private(set) var results: [MessageSearch.Result] = []
     public private(set) var allContacts: [Contact] = []
@@ -166,7 +171,7 @@ public final class SearchViewModel {
     /// any single scan ambushing the UI.
     public func loadOlderResults() async {
         guard canLoadOlder, !isLoadingOlder, !isSearching,
-              let oldest = results.last?.message.date,
+              let lastLoaded = results.last?.message.date,
               let instrEngine else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
@@ -175,10 +180,20 @@ public final class SearchViewModel {
         let phrase = query
         let person = selectedContact
         let caseSensitive = self.caseSensitive
-        // Intersect the user's own date filter with the page window.
-        let lower = dateRange?.lowerBound ?? Date.distantPast
-        guard lower <= oldest else { canLoadOlder = false; return }
-        let pageRange = lower...oldest
+        let order: MessageSearch.SortOrder = sortDescending ? .descending : .ascending
+        // Page window extends in the SORT direction from the last loaded
+        // row (inclusive bound so equal timestamps can't fall in the gap),
+        // intersected with the user's own date filter.
+        let pageRange: ClosedRange<Date>
+        if sortDescending {
+            let lower = dateRange?.lowerBound ?? Date.distantPast
+            guard lower <= lastLoaded else { canLoadOlder = false; return }
+            pageRange = lower...lastLoaded
+        } else {
+            let upper = dateRange?.upperBound ?? Date.distantFuture
+            guard lastLoaded <= upper else { canLoadOlder = false; return }
+            pageRange = lastLoaded...upper
+        }
 
         let useFTS = usingIndex
         let fts = ftsEngine
@@ -188,12 +203,14 @@ public final class SearchViewModel {
                 if useFTS, let fts {
                     res = try fts.search(
                         phrase: phrase, person: person, dateRange: pageRange,
-                        limit: Self.liveResultCap, caseSensitive: caseSensitive
+                        limit: Self.liveResultCap, caseSensitive: caseSensitive,
+                        order: order
                     )
                 } else {
                     res = try instrEngine.search(
                         phrase: phrase, person: person, dateRange: pageRange,
-                        limit: Self.liveResultCap, caseSensitive: caseSensitive
+                        limit: Self.liveResultCap, caseSensitive: caseSensitive,
+                        order: order
                     )
                 }
                 return Result<[MessageSearch.Result], Error>.success(res)
@@ -578,6 +595,7 @@ public final class SearchViewModel {
         let person = selectedContact
         let range = dateRange
         let caseSensitive = self.caseSensitive
+        let order: MessageSearch.SortOrder = sortDescending ? .descending : .ascending
 
         let trimmedPhrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedPhrase.isEmpty && person == nil && range == nil {
@@ -615,7 +633,8 @@ public final class SearchViewModel {
                         person: person,
                         dateRange: range,
                         limit: Self.liveResultCap,
-                        caseSensitive: caseSensitive
+                        caseSensitive: caseSensitive,
+                        order: order
                     )
                 } else {
                     res = try instrEngine.search(
@@ -623,7 +642,8 @@ public final class SearchViewModel {
                         person: person,
                         dateRange: range,
                         limit: Self.liveResultCap,
-                        caseSensitive: caseSensitive
+                        caseSensitive: caseSensitive,
+                        order: order
                     )
                 }
                 return .success(res)

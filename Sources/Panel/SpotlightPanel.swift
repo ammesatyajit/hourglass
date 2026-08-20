@@ -285,6 +285,7 @@ struct SpotlightPanel: View {
             SearchField(
                 text: searchFieldBinding,
                 caseSensitive: mode == .keyword ? $viewModel.caseSensitive : nil,
+                sortDescending: mode == .keyword ? $viewModel.sortDescending : nil,
                 placeholder: mode == .ask ? "Ask anything…" : "Search messages",
                 rotatingExamples: mode == .ask
                     ? SpotlightPanel.askPlaceholderExamples
@@ -508,6 +509,11 @@ struct SpotlightPanel: View {
             if currentIsStale {
                 selectedResultID = firstID
             }
+        }
+        .onChange(of: viewModel.sortDescending) { _, _ in
+            // Flipping sort direction re-runs the search from the top of
+            // the new direction; pagination then extends the same way.
+            viewModel.searchSoon()
         }
         .onChange(of: viewModel.caseSensitive) { _, _ in
             // Toggling the Aa pill must re-run the search — both code paths
@@ -1521,7 +1527,7 @@ struct SpotlightPanel: View {
                 }
                 Text(
                     viewModel.canLoadOlder
-                        ? "\(viewModel.results.count.formatted())+ results · scroll for older"
+                        ? "\(viewModel.results.count.formatted())+ results · scroll for more"
                         : "\(viewModel.results.count.formatted()) results"
                 )
                     .font(.caption.monospacedDigit())
@@ -1621,7 +1627,7 @@ private struct SpotlightResultsList: View, Equatable {
                     if canLoadOlder {
                         HStack(spacing: Space.sm) {
                             ProgressView().controlSize(.small)
-                            Text("Loading older matches…")
+                            Text("Loading more matches…")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
