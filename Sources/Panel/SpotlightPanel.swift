@@ -600,7 +600,9 @@ struct SpotlightPanel: View {
             results: viewModel.results,
             selectedResultID: selectedResultID,
             onSelect: { selectedResultID = $0 },
-            onReveal: reveal
+            onReveal: reveal,
+            canLoadOlder: viewModel.canLoadOlder,
+            onReachedEnd: { Task { await viewModel.loadOlderResults() } }
         )
         .equatable()
     }
@@ -1518,9 +1520,9 @@ struct SpotlightPanel: View {
                         .accessibilityLabel("Fast index in use")
                 }
                 Text(
-                    viewModel.results.count >= SearchViewModel.liveResultCap
-                        ? "\(SearchViewModel.liveResultCap)+ results"
-                        : "\(viewModel.results.count) results"
+                    viewModel.canLoadOlder
+                        ? "\(viewModel.results.count.formatted())+ results · scroll for older"
+                        : "\(viewModel.results.count.formatted()) results"
                 )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
@@ -1591,6 +1593,12 @@ private struct SpotlightResultsList: View, Equatable {
     // visible changed.
     let onSelect: (Int64) -> Void
     let onReveal: (MessageSearch.Result) -> Void
+    /// True when older pages may exist; renders the tail sentinel row.
+    let canLoadOlder: Bool
+    /// Fired when the tail sentinel becomes visible — the parent loads the
+    /// next (older) page. Infinite scroll: everything is reachable, one
+    /// capped page at a time.
+    let onReachedEnd: () -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -1610,6 +1618,17 @@ private struct SpotlightResultsList: View, Equatable {
                         )
                         .id(result.message.id)
                     }
+                    if canLoadOlder {
+                        HStack(spacing: Space.sm) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading older matches…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Space.sm)
+                        .onAppear { onReachedEnd() }
+                    }
                 }
                 .padding(.horizontal, Space.md)
                 .padding(.vertical, Space.sm)
@@ -1626,6 +1645,8 @@ private struct SpotlightResultsList: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         // Selection change → re-render (so the highlight moves).
         guard lhs.selectedResultID == rhs.selectedResultID else { return false }
+        // Pagination tail appearing/disappearing → re-render.
+        guard lhs.canLoadOlder == rhs.canLoadOlder else { return false }
         // Result-set change → re-render. Compare the ID sequence
         // rather than the full `MessageSearch.Result` (which carries
         // decoded text, avatars, reactions — Equatable but expensive

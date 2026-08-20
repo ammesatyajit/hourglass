@@ -148,6 +148,76 @@ public final class SearchViewModel {
     /// discarded work finish and hog CPU behind the live search.
     private var activeSearchTask: Task<Result<[MessageSearch.Result], Error>, Never>?
 
+    // MARK: - Pagination (reach EVERYTHING, one capped page at a time)
+
+    /// True when the last loaded page came back full — older matches may
+    /// exist beyond what's loaded. Drives the panel's infinite scroll.
+    public private(set) var canLoadOlder: Bool = false
+    /// True while an older page is being fetched (guards re-entrancy from
+    /// repeated scroll-bottom triggers).
+    public private(set) var isLoadingOlder: Bool = false
+
+    /// Fetch the next (older) page of the CURRENT query and append it.
+    ///
+    /// Keyset pagination: the page window's upper bound is the oldest loaded
+    /// result's date (inclusive, so equal-timestamp rows can't fall in the
+    /// gap); rows already present are dropped by ROWID. Each page pays the
+    /// same capped cost as a live search — everything is reachable without
+    /// any single scan ambushing the UI.
+    public func loadOlderResults() async {
+        guard canLoadOlder, !isLoadingOlder, !isSearching,
+              let oldest = results.last?.message.date,
+              let instrEngine else { return }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+
+        let myGen = searchGeneration
+        let phrase = query
+        let person = selectedContact
+        let caseSensitive = self.caseSensitive
+        // Intersect the user's own date filter with the page window.
+        let lower = dateRange?.lowerBound ?? Date.distantPast
+        guard lower <= oldest else { canLoadOlder = false; return }
+        let pageRange = lower...oldest
+
+        let useFTS = usingIndex
+        let fts = ftsEngine
+        let pageTask = Task.detached(priority: .userInitiated) {
+            do {
+                let res: [MessageSearch.Result]
+                if useFTS, let fts {
+                    res = try fts.search(
+                        phrase: phrase, person: person, dateRange: pageRange,
+                        limit: Self.liveResultCap, caseSensitive: caseSensitive
+                    )
+                } else {
+                    res = try instrEngine.search(
+                        phrase: phrase, person: person, dateRange: pageRange,
+                        limit: Self.liveResultCap, caseSensitive: caseSensitive
+                    )
+                }
+                return Result<[MessageSearch.Result], Error>.success(res)
+            } catch {
+                return .failure(error)
+            }
+        }
+        let outcome = await pageTask.value
+
+        // The query changed while we were paging — drop the stale page.
+        guard searchGeneration == myGen else { return }
+        switch outcome {
+        case .success(let page):
+            let seen = Set(results.map(\.message.id))
+            let fresh = page.filter { !seen.contains($0.message.id) }
+            results.append(contentsOf: fresh)
+            // A full page (before dedupe) means there may be more below.
+            canLoadOlder = page.count >= Self.liveResultCap
+        case .failure(let err):
+            if err is CancellationError { return }
+            canLoadOlder = false
+        }
+    }
+
     // MARK: - Indexing progress type
 
     public struct IndexingProgress: Sendable, Equatable {
@@ -485,6 +555,7 @@ public final class SearchViewModel {
             self.results = []
             self.isSearching = false
             self.errorMessage = nil
+            self.canLoadOlder = false
             return
         }
         debounceTask = Task { [weak self] in
@@ -568,6 +639,9 @@ public final class SearchViewModel {
         switch outcome {
         case .success(let res):
             self.results = res
+            // A full first page means older matches may exist — arm the
+            // panel's infinite scroll.
+            self.canLoadOlder = res.count >= Self.liveResultCap
         case .failure(let err):
             // A cancelled scan is the SUCCESSOR search's doing, never an
             // error the user should see — the newer search owns the UI now.
