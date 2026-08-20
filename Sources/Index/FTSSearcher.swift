@@ -65,23 +65,13 @@ public struct FTSSearcher: Sendable {
         // mirror can serve this query at all.
         let phraseAST = try PhraseQuery.parse(parsed.freeText, caseSensitive: caseSensitive)
 
-        // FTS5 can't help with:
-        //   (a) Regex needles — there's no equivalent in MATCH syntax.
-        //   (b) Terms shorter than 3 characters — SQLite's trigram
-        //       tokenizer can't index or query those. (A 2-char "hi"
-        //       query against the trigram index silently returns zero.)
-        //
-        // Either condition forces us to delegate to the INSTR path,
-        // which can handle both correctness paths. The delegation is
-        // the entire fallback — we don't try to half-execute on FTS5.
-        //
-        //   (c) NO free text at all (operator-only queries like
-        //       `with:"Bec` mid-type, or `in:"…" reactions:>=5`) — the
-        //       MATCH degenerates to `1`, so the FTS join is pure
-        //       overhead AND it defeats chat.db's date-index early-exit:
-        //       measured 8.3s (FTS, capped) vs 0.14s (INSTR, capped) for
-        //       a live `with:"Be` keystroke over 657k rows.
-        if phraseAST.isEmpty || phraseAST.containsRegex || phraseAST.containsShortTerm(minLength: 3) {
+        // Operator-only queries (NO free text — `with:"Bec` mid-type, or
+        // `in:"…" reactions:>=5`) delegate to the INSTR path: the MATCH
+        // would degenerate to `1`, so the FTS join is pure overhead AND it
+        // defeats chat.db's date-index early-exit — measured 8.3s (FTS,
+        // capped) vs 0.14s (INSTR, capped) for a live `with:"Be` keystroke
+        // over 657k rows.
+        if phraseAST.isEmpty {
             let fallback = MessageSearch(database: chatDB, contacts: contacts)
             return try fallback.search(
                 phrase: phrase,
@@ -93,6 +83,21 @@ public struct FTSSearcher: Sendable {
                 order: order
             )
         }
+
+        // FTS5's MATCH can't express:
+        //   (a) Regex needles — no equivalent in MATCH syntax.
+        //   (b) Terms shorter than 3 characters — the trigram tokenizer
+        //       can't index or query those (a 2-char MATCH silently
+        //       returns zero, so building a partial MATCH would DROP rows).
+        // These used to delegate to the chat.db INSTR path — 30s on a
+        // 657k-row corpus because every candidate's attributedBody gets
+        // typedstream-DECODED. The mirror already stores every body as
+        // decoded plain text, so instead: force a full MIRROR scan
+        // (ftsExpression = nil → no MATCH) and let the Swift-side phrase
+        // AST refine against `fts.body` directly. Same correctness, no
+        // per-row decode.
+        let forceMirrorScan = phraseAST.containsRegex
+            || phraseAST.containsShortTerm(minLength: 3)
 
         // Caller `dateRange` AND any parsed date range. Codex audit H1
         // fix — use the three-state constraint so contradictory date
@@ -117,7 +122,9 @@ public struct FTSSearcher: Sendable {
         // Note: FTS5 special chars (`"`, `*`, parens, etc.) get
         // escaped by quote-doubling the inner contents. We use a simple
         // quote-escape since trigram needles never need wildcard support.
-        let ftsExpression: String? = Self.buildFTS5Expression(from: phraseAST)
+        let ftsExpression: String? = forceMirrorScan
+            ? nil
+            : Self.buildFTS5Expression(from: phraseAST)
 
         // Build the SQL — we run it on chat.db's queue and ATTACH the
         // index file as `idx`. See comment near the executor below.
@@ -143,10 +150,17 @@ public struct FTSSearcher: Sendable {
             matchSQL = "messages_fts MATCH ?"
             matchArgs.append(ftsExpression)
         } else {
-            // No text needles — apply filters only. We still need to read
-            // from the mirror's meta table so the rest of the query has
-            // something to filter on. Skip the FTS table entirely.
-            matchSQL = "1"
+            // Mirror scan (regex / short-term needles). MATCH can't express
+            // these, but a coarse SQL `instr` prefilter over the DECODED
+            // body can cut the join/materialization cost before the Swift
+            // AST refines. RECALL-SAFE by construction: substring
+            // containment is a superset of every needle mode (word-boundary,
+            // *substr*, OR-groups); regex groups get no SQL conjunct (their
+            // rows all pass to Swift). Single-letter terms barely filter —
+            // that degenerate case stays a full scan.
+            let (prefilterSQL, prefilterArgs) = Self.instrPrefilter(from: phraseAST)
+            matchSQL = prefilterSQL
+            matchArgs.append(contentsOf: prefilterArgs)
         }
 
         // Run on chat.db's connection — we ATTACH the index file there. This
@@ -167,15 +181,22 @@ public struct FTSSearcher: Sendable {
         // this through the FROM clause's schema, so `FROM idx.messages_fts`
         // + `WHERE messages_fts MATCH ?` works correctly. Writing the WHERE
         // as `WHERE idx.messages_fts MATCH ?` fails with `no such column`.
+        // Both branches join the FTS table — it stores the DECODED body,
+        // which the select reads directly (`fts.body`). This kills the
+        // per-row typedstream decode that used to dominate hydration
+        // (the `JOIN message m` existed only to fetch text/attributedBody).
         let usingFTS = ftsExpression != nil
         let fromClause: String
         if usingFTS {
             fromClause = """
-            FROM idx.messages_fts
-            JOIN idx.message_meta meta ON meta.rowid = idx.messages_fts.rowid
+            FROM idx.messages_fts messages_fts
+            JOIN idx.message_meta meta ON meta.rowid = messages_fts.rowid
             """
         } else {
-            fromClause = "FROM idx.message_meta meta"
+            fromClause = """
+            FROM idx.message_meta meta
+            JOIN idx.messages_fts messages_fts ON messages_fts.rowid = meta.rowid
+            """
         }
 
         let sql = """
@@ -183,7 +204,6 @@ public struct FTSSearcher: Sendable {
             JOIN chat_message_join cmj ON cmj.message_id = meta.rowid
             JOIN chat ch ON ch.ROWID = cmj.chat_id
             LEFT JOIN handle h ON h.ROWID = meta.handle_id
-            JOIN message m ON m.ROWID = meta.rowid
             WHERE \(matchSQL)
               AND meta.associated_message_type = 0
               \(metaDateSQL)
@@ -203,8 +223,7 @@ public struct FTSSearcher: Sendable {
                 meta.guid                 AS guid,
                 meta.date                 AS date,
                 meta.is_from_me           AS is_from_me,
-                m.text                    AS text,
-                m.attributedBody          AS attributedBody,
+                messages_fts.body         AS body,
                 meta.associated_message_type AS associated_message_type,
                 h.id                      AS sender_handle,
                 -- IMPORTANT: read chat_id from cmj (always non-NULL via the
@@ -275,9 +294,10 @@ public struct FTSSearcher: Sendable {
             }
             let date = MessageDate.date(fromRaw: rawDate)
             let isFromMe: Bool = (row["is_from_me"] as Int? ?? 0) == 1
-            let text: String? = row["text"]
-            let blob: Data? = row["attributedBody"]
-            let body = (text?.isEmpty == false) ? text! : AttributedBodyDecoder.decode(blob)
+            // The mirror stores the DECODED body — read it straight off the
+            // row instead of typedstream-decoding m.attributedBody (which
+            // used to dominate hydration time).
+            let body: String = row["body"] ?? ""
 
             if !phraseAST.isEmpty {
                 // Refine the FTS5 trigram recall with the AST's
@@ -514,6 +534,34 @@ public struct FTSSearcher: Sendable {
     ///
     /// Returns nil if the AST is empty OR contains no representable
     /// leaves (e.g. all regex — caller falls back upstream).
+    /// Coarse SQL prefilter for mirror scans: per AST group, OR the term
+    /// needles as case-insensitive `instr` substring checks; AND across
+    /// groups. Groups containing any non-term needle (regex) contribute no
+    /// conjunct — their rows pass through to the Swift refinement, keeping
+    /// the prefilter a strict recall superset of the AST.
+    static func instrPrefilter(from ast: PhraseQuery) -> (String, [DatabaseValueConvertible]) {
+        var conjuncts: [String] = []
+        var args: [DatabaseValueConvertible] = []
+        for g in ast.groups {
+            var ors: [String] = []
+            var groupArgs: [DatabaseValueConvertible] = []
+            var expressible = true
+            for n in g.needles {
+                guard case .term(let t, _) = n, !t.isEmpty else {
+                    expressible = false
+                    break
+                }
+                ors.append("instr(lower(messages_fts.body), ?) > 0")
+                groupArgs.append(t.lowercased())
+            }
+            guard expressible, !ors.isEmpty else { continue }
+            conjuncts.append("(" + ors.joined(separator: " OR ") + ")")
+            args.append(contentsOf: groupArgs)
+        }
+        guard !conjuncts.isEmpty else { return ("1", []) }
+        return (conjuncts.joined(separator: " AND "), args)
+    }
+
     static func buildFTS5Expression(from ast: PhraseQuery) -> String? {
         if ast.isEmpty { return nil }
         var groupExprs: [String] = []

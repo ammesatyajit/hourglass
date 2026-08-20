@@ -223,6 +223,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let instr = viewModel.messageSearch else {
                     print("SEARCHBENCH:: FATAL chat.db unavailable"); exit(1)
                 }
+                // ftsSearcher initializes asynchronously at launch — wait
+                // briefly so the bench compares BOTH engines, not just INSTR.
+                var ftsWait = 0
+                while viewModel.ftsSearcher == nil, ftsWait < 40 {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    ftsWait += 1
+                }
                 let fts = viewModel.ftsSearcher
                 let queries = raw.components(separatedBy: "||")
                     .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
