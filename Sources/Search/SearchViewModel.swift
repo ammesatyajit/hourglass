@@ -130,6 +130,15 @@ public final class SearchViewModel {
     /// Monotonic counter — incremented on every search request.
     private var searchGeneration: Int = 0
 
+    /// Max rows a LIVE (as-you-type) search materializes. Without a cap,
+    /// a broad partial inside an operator (`with:"Be` on the way to "Beck")
+    /// matched tens of thousands of rows and DECODED EVERY attributedBody
+    /// per keystroke — seconds of pegged CPU per character, stacking with
+    /// each keypress (the detached search isn't cancellable mid-query).
+    /// 500 fills the panel many screens deep; the footer shows "500+" so
+    /// the cap is never mistaken for an exact count.
+    public nonisolated static let liveResultCap = 500
+
     /// The pending debounced search, if any.
     private var debounceTask: Task<Void, Never>?
 
@@ -522,6 +531,7 @@ public final class SearchViewModel {
                         phrase: phrase,
                         person: person,
                         dateRange: range,
+                        limit: Self.liveResultCap,
                         caseSensitive: caseSensitive
                     )
                 } else {
@@ -529,6 +539,7 @@ public final class SearchViewModel {
                         phrase: phrase,
                         person: person,
                         dateRange: range,
+                        limit: Self.liveResultCap,
                         caseSensitive: caseSensitive
                     )
                 }

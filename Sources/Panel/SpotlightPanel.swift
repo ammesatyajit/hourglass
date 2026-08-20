@@ -1517,7 +1517,11 @@ struct SpotlightPanel: View {
                         .help("Search served from the local FTS5 index — sub-millisecond.")
                         .accessibilityLabel("Fast index in use")
                 }
-                Text("\(viewModel.results.count) results")
+                Text(
+                    viewModel.results.count >= SearchViewModel.liveResultCap
+                        ? "\(SearchViewModel.liveResultCap)+ results"
+                        : "\(viewModel.results.count) results"
+                )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
