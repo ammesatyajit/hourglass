@@ -9,6 +9,25 @@
         <description>Hourglass updates feed.</description>
         <language>en</language>
         <item>
+            <title>Version 0.4.1</title>
+            <pubDate>Sat, 22 Aug 2026 02:55:02 +0000</pubDate>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Search, fast and complete</h3>
+                <ul>
+                    <li><strong>Typing is instant</strong> — even with filters and names, results keep up with your keystrokes.</li>
+                    <li><strong>Every match is reachable</strong> — results load as you scroll, all the way back to your oldest messages.</li>
+                    <li><strong>Sort either direction</strong> — a small arrow beside the Aa control flips newest-first and oldest-first.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.4.1/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="J21H94lBuH1TU5tGTudmZq2Ni16wL8OQfH8czbCrMNV3yjz26ydfx9ApcFq9UX2tGKGWkbJmS499ZwDZ5HgeDQ==" length="21475775" />
+        </item>
+        <item>
             <title>Version 0.4.0</title>
             <pubDate>Tue, 18 Aug 2026 03:08:05 +0000</pubDate>
             <sparkle:version>7</sparkle:version>
