@@ -36,6 +36,13 @@ struct HourglassApp: App {
         .defaultSize(width: 1200, height: 800)
         .windowResizability(.contentMinSize)
         .commands {
+            // "Check for Updates…" in the STANDARD location — the app menu,
+            // right under About. It also lives in the menu-bar extra's
+            // dropdown, but users look here first (and dashboard users may
+            // never open the menu-bar icon at all).
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesMenuItem(updater: appDelegate.updaterController.updater)
+            }
             // ⌘+/⌘−/⌘0 — browser-style dashboard zoom. "+" needs ⇧ on US
             // layouts, so "=" is registered too (matches Safari/Chrome).
             CommandGroup(after: .toolbar) {
