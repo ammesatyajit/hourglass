@@ -60,7 +60,11 @@ struct HourglassApp: App {
 
         // Menu bar entry — secondary, ever-present surface for quick access
         // to the panel, the browser, and Settings.
-        MenuBarExtra("Hourglass", systemImage: "magnifyingglass.circle.fill") {
+        // "hourglass", NOT a magnifying glass: the old magnifyingglass icon sat
+        // in the menu bar looking identical to macOS's own Spotlight icon —
+        // users clicked Apple's, got system search, and concluded Hourglass's
+        // menu (incl. Check for Updates…) didn't exist.
+        MenuBarExtra("Hourglass", systemImage: "hourglass") {
             MenuBarContent(appDelegate: appDelegate)
         }
         .menuBarExtraStyle(.menu)
