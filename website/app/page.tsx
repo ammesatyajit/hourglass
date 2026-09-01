@@ -568,7 +568,7 @@ function About() {
       <div>
         <span>ABOUT ME</span>
         <h2>Satyajit Kumar</h2>
-        <p>I built Hourglass because the conversations I cared about were impossible to find again.</p>
+        <p>I built Hourglass cuz iMessage search was unusable.</p>
         <a href="https://github.com/ammesatyajit" rel="noreferrer">GitHub ↗</a>
       </div>
     </section>
