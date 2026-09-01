@@ -9,6 +9,24 @@
         <description>Hourglass updates feed.</description>
         <language>en</language>
         <item>
+            <title>Version 0.4.2</title>
+            <pubDate>Tue, 01 Sep 2026 03:18:48 +0000</pubDate>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>0.4.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h3>Small but mighty</h3>
+                <ul>
+                    <li><strong>Check for Updates</strong> now lives in the Hourglass menu, right under About.</li>
+                    <li><strong>New menu-bar icon</strong> — an hourglass, no longer a Spotlight lookalike.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://hourglass-downloads.ammesatyajit.workers.dev/update/0.4.2/Hourglass.dmg"
+                type="application/octet-stream"
+                sparkle:edSignature="xa614oFZGLvmHbjHfuWYm96N9i5QiEG+MwqH7pFkiIcWtaBWjOGuybXpAd07FY9LI2rVZ8qHO306GgLbJj22Ag==" length="21475121" />
+        </item>
+        <item>
             <title>Version 0.4.1</title>
             <pubDate>Sat, 22 Aug 2026 02:55:02 +0000</pubDate>
             <sparkle:version>8</sparkle:version>
