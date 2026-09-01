@@ -135,11 +135,23 @@ codesign --sign "$DEVELOPER_ID" --timestamp "$DMG_PATH"
 # dying AFTER upload and taking the rest of this script with it. A short
 # submit + polling loop gets the same result without a process that has to
 # survive the whole notarization wait.
-SUBMIT_OUT="$(xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE")"
-echo "$SUBMIT_OUT"
-SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/^[[:space:]]*id:/{print $2; exit}')"
+# notarytool intermittently crashes with a bus error mid-submit on this
+# Xcode (observed 3x across the 0.4.0/0.4.1 releases). A crashed-client
+# submission WEDGES server-side and later gets purged by Apple, while a
+# clean resubmit of the same file sails through in under a minute — so
+# retry the submit itself up to 3 times. (`|| true` because set -e would
+# otherwise kill the whole script on the crash signal.)
+SUBMISSION_ID=""
+for SUBMIT_ATTEMPT in 1 2 3; do
+    SUBMIT_OUT="$(xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" 2>&1)" || true
+    echo "$SUBMIT_OUT"
+    SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/^[[:space:]]*id:/{print $2; exit}')"
+    if [ -n "$SUBMISSION_ID" ]; then break; fi
+    echo "warn: notarytool submit produced no id (attempt $SUBMIT_ATTEMPT/3) — retrying" >&2
+    sleep 3
+done
 if [ -z "$SUBMISSION_ID" ]; then
-    echo "error: could not parse submission id from notarytool output" >&2
+    echo "error: could not parse submission id from notarytool output after 3 attempts" >&2
     exit 1
 fi
 echo "Waiting on notarization ($SUBMISSION_ID)…"
