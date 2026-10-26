@@ -293,8 +293,22 @@ CREATE TABLE attachment (
     filename TEXT,
     uti TEXT,
     mime_type TEXT,
-    total_bytes INTEGER
+    total_bytes INTEGER,
+    is_sticker INTEGER DEFAULT 0       -- typeClause filters on this
 );
+
+-- Attachment join: needed by the type: operator's subquery (typeClause
+-- emits `... FROM message_attachment_join maj JOIN attachment a ...`).
+-- Omitting the table made every `type:` query THROW in tests while
+-- passing against real chat.db — the operator-matrix parity test guards
+-- this now.
+CREATE TABLE message_attachment_join (
+    message_id INTEGER,
+    attachment_id INTEGER
+);
+INSERT INTO attachment (ROWID, guid, filename, uti, mime_type, total_bytes)
+VALUES (901, 'FIXTURE-ATT-901', '~/Library/Messages/Attachments/aa/x.jpeg', 'public.jpeg', 'image/jpeg', 1024);
+INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (203, 901);
 
 CREATE TABLE chat_handle_join (
     chat_id INTEGER,

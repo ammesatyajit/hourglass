@@ -123,6 +123,48 @@ final class FTSSearcherTests: XCTestCase {
         )
     }
 
+    /// THE CLASS GUARD for the v0.4.1 `from:` regression: every operator
+    /// family, with and without free text, through BOTH engines. Each cell
+    /// must (a) not throw — the regression's failure mode was SQL referencing
+    /// a dropped join alias — and (b) agree between engines. New operators
+    /// MUST be added here; a single-operator test only protects one cell.
+    func testParity_operatorMatrix() throws {
+        let env = try makeEnvironment()
+        defer { env.cleanup() }
+        // Operators drive raw fixture handles / chat names (AB contacts are
+        // deliberately empty in this environment — `h.id LIKE` branch).
+        let operators = [
+            "from:me",
+            "from:\"+15551234567\"",          // named-sender branch (m.is_from_me = 0 AND h.id …)
+            "to:\"+15551234567\"",
+            "with:\"friend@example.com\"",
+            "in:\"Test Group\"",
+            "reactions:>=1",
+            "type:image",
+            "last:9999d",
+        ]
+        let phrases = ["", "cactus"]
+        for op in operators {
+            for phrase in phrases {
+                let q = phrase.isEmpty ? op : "\(op) \(phrase)"
+                var instrHits: [MessageSearch.Result] = []
+                var ftsHits: [MessageSearch.Result] = []
+                XCTAssertNoThrow(
+                    instrHits = try env.instr.search(phrase: q),
+                    "INSTR threw for \(q)"
+                )
+                XCTAssertNoThrow(
+                    ftsHits = try env.fts.search(phrase: q),
+                    "FTS threw for \(q) — check every m.*/h.*/ch.* alias the reused clauses emit still resolves in the FTS query"
+                )
+                XCTAssertEqual(
+                    rowids(instrHits), rowids(ftsHits),
+                    "engine disagreement for \(q)"
+                )
+            }
+        }
+    }
+
     func testParity_dateFilteredEmptyPhrase() throws {
         let env = try makeEnvironment()
         defer { env.cleanup() }
