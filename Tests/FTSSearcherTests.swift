@@ -106,6 +106,23 @@ final class FTSSearcherTests: XCTestCase {
         XCTAssertEqual(rowids(instrHits), rowids(ftsHits))
     }
 
+    func testParity_fromMeFilterWithFreeText() throws {
+        // Regression: v0.4.1 dropped `JOIN message m` from the FTS query
+        // (bodies now come from the mirror) but the reused fromClause still
+        // emits `m.is_from_me` — every `from:`-filtered FTS query with free
+        // text failed with "no such column: m.is_from_me". `from:me` plus a
+        // trigram-eligible needle forces exactly that path; the search must
+        // not throw, and must agree with INSTR.
+        let env = try makeEnvironment()
+        defer { env.cleanup() }
+        let instrHits = try env.instr.search(phrase: "from:me cactus")
+        let ftsHits = try env.fts.search(phrase: "from:me cactus")
+        XCTAssertEqual(
+            rowids(instrHits), rowids(ftsHits),
+            "from:-filtered FTS query must not lose the chat.db message join"
+        )
+    }
+
     func testParity_dateFilteredEmptyPhrase() throws {
         let env = try makeEnvironment()
         defer { env.cleanup() }

@@ -183,8 +183,15 @@ public struct FTSSearcher: Sendable {
         // as `WHERE idx.messages_fts MATCH ?` fails with `no such column`.
         // Both branches join the FTS table — it stores the DECODED body,
         // which the select reads directly (`fts.body`). This kills the
-        // per-row typedstream decode that used to dominate hydration
-        // (the `JOIN message m` existed only to fetch text/attributedBody).
+        // per-row typedstream decode that used to dominate hydration.
+        //
+        // `JOIN message m` is STILL required — not for bodies, but because
+        // the reused MessageSearch filter clauses (fromClause/toClause/
+        // withClause) emit SQL against `m.*` (e.g. `m.is_from_me`).
+        // Shipped-bug history: v0.4.1 dropped this join along with the
+        // blob columns, which broke every `from:`-filtered FTS query with
+        // "no such column: m.is_from_me". The join is cheap (PK lookup,
+        // no blob columns selected); the DECODE was the cost, not the join.
         let usingFTS = ftsExpression != nil
         let fromClause: String
         if usingFTS {
@@ -204,6 +211,7 @@ public struct FTSSearcher: Sendable {
             JOIN chat_message_join cmj ON cmj.message_id = meta.rowid
             JOIN chat ch ON ch.ROWID = cmj.chat_id
             LEFT JOIN handle h ON h.ROWID = meta.handle_id
+            JOIN message m ON m.ROWID = meta.rowid
             WHERE \(matchSQL)
               AND meta.associated_message_type = 0
               \(metaDateSQL)

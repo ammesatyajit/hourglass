@@ -23,6 +23,47 @@
 import Foundation
 import GRDB
 
+/// Row → `MessageSearch.Result` for the context-window queries below.
+/// File-scope (not a local func): GRDB's `Row` is non-Sendable on Xcode
+/// 26.7+, so the mapping must run INSIDE the Sendable read closures — and a
+/// local function value is itself a non-Sendable capture. A free function
+/// reference is not.
+private func contextRowResult(_ row: Row) -> MessageSearch.Result {
+            let rawDate: Int64 = row["date"]
+            let text: String? = row["text"]
+            let blob: Data? = row["attributedBody"]
+            let body = (text?.isEmpty == false) ? text! : AttributedBodyDecoder.decode(blob)
+            let isFromMe = (row["is_from_me"] as Int? ?? 0) == 1
+            let senderHandle: String? = row["sender_handle"]
+            let chatDisplayName: String? = row["chat_display_name"]
+            let chatStyle: Int? = row["chat_style"]
+            let m = Message(
+                id: row["rowid"],
+                guid: row["guid"],
+                date: MessageDate.date(fromRaw: rawDate),
+                isFromMe: isFromMe,
+                chatRowID: row["chat_id"],
+                senderHandle: senderHandle,
+                chatStyle: chatStyle,
+                chatDisplayName: chatDisplayName,
+                body: body,
+                associatedMessageType: row["associated_message_type"] as Int? ?? 0
+            )
+            let partner: String
+            // Match MessageSearch / FTSSearcher: no "[group] " text prefix —
+            // the UI shows a person.3 SF Symbol from `chatStyle == 43`.
+            if let dn = chatDisplayName, !dn.isEmpty { partner = dn }
+            else { partner = senderHandle ?? "(unknown)" }
+            let sender = isFromMe ? "You" : (senderHandle ?? "(unknown)")
+            return MessageSearch.Result(
+                message: m,
+                partnerName: partner,
+                senderName: sender,
+                chatGUID: row["chat_guid"]
+            )
+}
+
+
 /// One contact the user appears to have befriended after a cutoff date — the
 /// result shape of `friendsMadeSince`. `afterShare` ≈ 1.0 means nearly all
 /// their messages post-date the cutoff (a genuinely new relationship).
@@ -584,21 +625,24 @@ public struct MessageSearchTools: NLAgentTools {
         let beforeCount = max(0, before)
         let afterCount = max(0, after)
 
-        // Look up the anchor row: chat_id + date for the given GUID.
+        // Look up the anchor: chat_id + date for the given GUID.
         // In async contexts GRDB picks the async `read` overload — that
-        // requires a Sendable closure.
-        let anchorRow: Row? = try await chatDB.dbQueue.read { db in
-            try Row.fetchOne(db, sql: """
+        // requires a Sendable closure AND a Sendable return value. GRDB's
+        // `Row` is explicitly non-Sendable (hard error on Xcode 26.7+), so
+        // extract the plain values inside the closure and return a tuple.
+        let anchor: (chatID: Int64, date: Int64)? = try await chatDB.dbQueue.read { db in
+            let row = try Row.fetchOne(db, sql: """
                 SELECT cmj.chat_id AS chat_id, m.date AS date
                 FROM message m
                 JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
                 WHERE m.guid = ?
                 LIMIT 1
                 """, arguments: [guid])
+            return row.map { ($0["chat_id"], $0["date"]) }
         }
-        guard let anchorRow else { return [] }
-        let anchorChatID: Int64 = anchorRow["chat_id"]
-        let anchorDate: Int64 = anchorRow["date"]
+        guard let anchor else { return [] }
+        let anchorChatID = anchor.chatID
+        let anchorDate = anchor.date
 
         // The selected columns mirror what MessageSearch.search reads so we
         // can reuse the same row→Result decoding logic.
@@ -641,53 +685,19 @@ public struct MessageSearchTools: NLAgentTools {
             LIMIT ?
             """
 
+
         // Over-fetch 2x to absorb tapbacks/hidden rows the WHERE drops.
-        let beforeRows: [Row] = (try? await chatDB.dbQueue.read { db in
+        let beforeMapped: [MessageSearch.Result] = (try? await chatDB.dbQueue.read { db in
             try Row.fetchAll(db, sql: beforeSQL,
-                             arguments: [anchorChatID, anchorDate, beforeCount * 2])
+                             arguments: [anchorChatID, anchorDate, beforeCount * 2]).map(contextRowResult)
         }) ?? []
-        let afterRows: [Row] = (try? await chatDB.dbQueue.read { db in
+        let afterMapped: [MessageSearch.Result] = (try? await chatDB.dbQueue.read { db in
             try Row.fetchAll(db, sql: afterSQL,
-                             arguments: [anchorChatID, anchorDate, afterCount * 2])
+                             arguments: [anchorChatID, anchorDate, afterCount * 2]).map(contextRowResult)
         }) ?? []
 
-        let mapped: (Row) -> MessageSearch.Result = { row in
-            let rawDate: Int64 = row["date"]
-            let text: String? = row["text"]
-            let blob: Data? = row["attributedBody"]
-            let body = (text?.isEmpty == false) ? text! : AttributedBodyDecoder.decode(blob)
-            let isFromMe = (row["is_from_me"] as Int? ?? 0) == 1
-            let senderHandle: String? = row["sender_handle"]
-            let chatDisplayName: String? = row["chat_display_name"]
-            let chatStyle: Int? = row["chat_style"]
-            let m = Message(
-                id: row["rowid"],
-                guid: row["guid"],
-                date: MessageDate.date(fromRaw: rawDate),
-                isFromMe: isFromMe,
-                chatRowID: row["chat_id"],
-                senderHandle: senderHandle,
-                chatStyle: chatStyle,
-                chatDisplayName: chatDisplayName,
-                body: body,
-                associatedMessageType: row["associated_message_type"] as Int? ?? 0
-            )
-            let partner: String
-            // Match MessageSearch / FTSSearcher: no "[group] " text prefix —
-            // the UI shows a person.3 SF Symbol from `chatStyle == 43`.
-            if let dn = chatDisplayName, !dn.isEmpty { partner = dn }
-            else { partner = senderHandle ?? "(unknown)" }
-            let sender = isFromMe ? "You" : (senderHandle ?? "(unknown)")
-            return MessageSearch.Result(
-                message: m,
-                partnerName: partner,
-                senderName: sender,
-                chatGUID: row["chat_guid"]
-            )
-        }
-
-        var resBefore = beforeRows.prefix(beforeCount).map(mapped)
-        let resAfter  = afterRows.prefix(afterCount).map(mapped)
+        var resBefore = beforeMapped.prefix(beforeCount)
+        let resAfter  = afterMapped.prefix(afterCount)
         // Return in chronological order (oldest → newest) so the agent
         // sees the cluster naturally.
         resBefore.reverse()
