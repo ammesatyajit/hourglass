@@ -196,6 +196,24 @@ targets:
         DEAD_CODE_STRIPPING: YES
         COMBINE_HIDPI_IMAGES: YES
 
+  hourglass-cli:
+    type: tool
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - Sources/CLI
+      - Sources/Data
+      - path: Sources/Search
+        excludes:
+          - QuerySuggestionsProvider.swift
+      - Sources/Index
+    dependencies:
+      - package: GRDB
+    settings:
+      base:
+        PRODUCT_NAME: hourglass-cli
+        SWIFT_VERSION: "5.0"
+
   HourglassTests:
     type: bundle.unit-test
     platform: macOS
